@@ -79,7 +79,7 @@ def test_pipeline_runs_end_to_end_with_outlier_column():
 
     selector = ModelSelector(df, profile, plan)
     result = selector.select(cv_folds=3)
-    assert len(result.candidate_results) == 4
+    assert len(result.candidate_results) + len(result.skipped_models) == 8
     assert 0.0 <= result.best_score <= 1.0
 
     # the clipper is part of the numeric branch and runs before the scaler

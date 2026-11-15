@@ -1,11 +1,12 @@
 """
 Module 3 — Model Selection
-Cross-validates 4 candidate classifiers, reports a full metric suite and a
-confusion matrix for each, explains each model's gains and limitations, and
-compares the winner with a fixed baseline. The baseline is fully described
-(what it does, why it was chosen, how it differs from DataNarrate) and an
-"improvement ladder" splits the gap into class balancing, preprocessing and
-model choice.
+Cross-validates 8 classifiers with different underlying ideas (linear, bagging,
+boosting, kernel margin, nearest neighbours, probabilistic, neural network and a
+voting ensemble), reports a full metric suite and a confusion matrix for each,
+explains each model's gains and limitations, and compares the winner with a
+fixed baseline. The baseline is fully described (what it does, why it was
+chosen, how it differs from DataNarrate) and an "improvement ladder" splits the
+gap into class balancing, preprocessing and model choice.
 """
 
 from dataclasses import dataclass, field, asdict
@@ -13,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+from scipy import sparse
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
@@ -20,6 +22,10 @@ from sklearn.preprocessing import StandardScaler, OneHotEncoder, LabelEncoder
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, VotingClassifier
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.naive_bayes import GaussianNB
+from sklearn.neural_network import MLPClassifier
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
@@ -29,6 +35,8 @@ from sklearn.metrics import (
 from src.profiler import DatasetProfile
 from src.preprocessor import PreprocessingPlan
 from src.outlier import build_clipper
+
+SVM_MAX_ROWS = 15000
 
 
 class FrequencyEncoder(BaseEstimator, TransformerMixin):
@@ -43,6 +51,16 @@ class FrequencyEncoder(BaseEstimator, TransformerMixin):
         for i, (_, col) in enumerate(X.items()):
             out[:, i] = col.map(self.freq_maps_[i]).fillna(0.0).values
         return out
+
+
+class DenseTransformer(BaseEstimator, TransformerMixin):
+    """Turns a sparse matrix into a dense array (Gaussian Naive Bayes cannot read sparse input)."""
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        return X.toarray() if sparse.issparse(X) else np.asarray(X)
 
 
 class InsufficientDataError(Exception):
@@ -61,6 +79,7 @@ class ModelMetrics:
     confusion_matrix: List[List[int]]
     gains: List[str] = field(default_factory=list)
     limitations: List[str] = field(default_factory=list)
+    family: str = ""
 
 
 @dataclass
@@ -95,6 +114,7 @@ class SelectionResult:
     cv_folds_used: int = 5
     baseline_info: Optional[BaselineInfo] = None
     ladder: List[LadderStep] = field(default_factory=list)
+    skipped_models: Dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -110,21 +130,46 @@ class SelectionResult:
             "cv_folds_used": self.cv_folds_used,
             "baseline_info": asdict(self.baseline_info) if self.baseline_info is not None else None,
             "ladder": [vars(s) for s in self.ladder],
+            "skipped_models": self.skipped_models,
         }
 
 
-def _build_candidates() -> Dict[str, Any]:
+def _build_candidates(n_rows: int = 0, min_class_count: int = 10 ** 9) -> Dict[str, Any]:
+    """The candidate models. n_rows lets the SVM be left out on large data, and
+    min_class_count decides whether the neural network can use early stopping
+    (which needs a few examples of every class in its validation split)."""
     lr = LogisticRegression(max_iter=2000, class_weight="balanced")
     rf = RandomForestClassifier(n_estimators=100, random_state=42, class_weight="balanced", n_jobs=-1)
     gb = GradientBoostingClassifier(random_state=42)
     voting = VotingClassifier(estimators=[("lr", lr), ("rf", rf), ("gb", gb)], voting="soft", n_jobs=-1)
-    return {
+
+    candidates: Dict[str, Any] = {
         "logistic_regression": lr,
         "random_forest": rf,
         "gradient_boosting": gb,
-        "voting_ensemble": voting,
     }
+    if n_rows <= SVM_MAX_ROWS:
+        candidates["svm"] = SVC(kernel="rbf", class_weight="balanced", random_state=42)
+    candidates["knn"] = KNeighborsClassifier(n_neighbors=15, weights="distance")
+    candidates["naive_bayes"] = Pipeline([("dense", DenseTransformer()), ("nb", GaussianNB())])
+    candidates["mlp"] = MLPClassifier(
+        hidden_layer_sizes=(64, 32), max_iter=300, random_state=42,
+        early_stopping=min_class_count >= 30,
+    )
+    candidates["voting_ensemble"] = voting
+    return candidates
 
+
+MODEL_FAMILIES = {
+    "logistic_regression": "Linear model",
+    "random_forest": "Bagging ensemble of trees",
+    "gradient_boosting": "Boosting ensemble of trees",
+    "svm": "Kernel / maximum margin",
+    "knn": "Instance-based (nearest neighbours)",
+    "naive_bayes": "Probabilistic (Bayes' rule)",
+    "mlp": "Neural network",
+    "voting_ensemble": "Voting ensemble (meta-model)",
+}
 
 MODEL_NOTES = {
     "logistic_regression": {
@@ -138,6 +183,53 @@ MODEL_NOTES = {
     "gradient_boosting": {
         "gains": ["Sequentially corrects previous errors (boosting), often reaching high accuracy", "Handles complex non-linear patterns well"],
         "limitations": ["More sensitive to hyperparameters and can overfit without tuning", "Slower to train than a single model"],
+    },
+    "svm": {
+        "gains": [
+            "Finds the widest possible margin between classes, which often generalises well",
+            "The RBF kernel captures curved, non-linear boundaries without manual feature engineering",
+            "Works well in high-dimensional spaces such as one-hot encoded data",
+        ],
+        "limitations": [
+            "Training time grows roughly with the square of the number of rows, so it is skipped on large datasets",
+            "Sensitive to feature scaling and outliers",
+            "Produces scores rather than true probabilities and is hard to interpret",
+        ],
+    },
+    "knn": {
+        "gains": [
+            "No training step and no assumptions about the shape of the data",
+            "Captures local patterns: similar rows tend to share a class",
+            "Easy to explain: 'this row looks like these 15 rows'",
+        ],
+        "limitations": [
+            "Prediction is slow on big datasets because every new row is compared with all stored rows",
+            "Distances lose meaning with many features, especially after one-hot encoding",
+            "Sensitive to outliers and irrelevant features, with no built-in handling of class imbalance",
+        ],
+    },
+    "naive_bayes": {
+        "gains": [
+            "Very fast and works with little data",
+            "Gives probabilities from simple per-feature statistics",
+            "A strong, simple probabilistic reference point",
+        ],
+        "limitations": [
+            "Assumes every feature is independent given the class, which is rarely true",
+            "Assumes numeric features are bell-shaped, which one-hot columns are not",
+            "Its probabilities are often over-confident",
+        ],
+    },
+    "mlp": {
+        "gains": [
+            "Can learn complex non-linear combinations of features",
+            "Flexible: the same model type covers very different problems",
+        ],
+        "limitations": [
+            "Usually needs more data and tuning to beat tree models on tabular data",
+            "A black box: hard to explain why a prediction was made",
+            "Results vary with the random start, and it has no class weighting",
+        ],
     },
     "voting_ensemble": {
         "gains": ["Combines a linear model with two different ensemble strategies, reducing the risk of any single model's blind spot", "Averaging predicted probabilities tends to reduce variance"],
@@ -208,7 +300,9 @@ def _names(cols: List[str], limit: int = 6) -> str:
     return ", ".join(cols[:limit]) + f" (+{len(cols) - limit} more)"
 
 
-def _describe_baseline(plan: PreprocessingPlan, metric_used: str, score: float) -> BaselineInfo:
+def _describe_baseline(
+    plan: PreprocessingPlan, metric_used: str, score: float, model_names: List[str]
+) -> BaselineInfo:
     decisions = plan.column_decisions
     ids = [d.column for d in decisions if any("identifier" in r for r in d.reasons)]
     heavy_missing = [d.column for d in decisions if d.missing_action == "drop_column" and d.column not in ids]
@@ -216,6 +310,8 @@ def _describe_baseline(plan: PreprocessingPlan, metric_used: str, score: float) 
     cat_imputed = [d.column for d in decisions if d.missing_action == "impute_mode"]
     onehot = [d.column for d in decisions if d.encoding_action == "one_hot"]
     freq = [d.column for d in decisions if d.encoding_action == "frequency_encode"]
+    clipped = [d.column for d in decisions if getattr(d, "outlier_action", "none") == "clip"]
+    weighted = [n.replace("_", " ") for n in model_names if n in ("logistic_regression", "random_forest", "svm")]
 
     base_key = "Baseline (fixed recipe)"
     dn_key = "DataNarrate (decided from the data)"
@@ -240,20 +336,25 @@ def _describe_baseline(plan: PreprocessingPlan, metric_used: str, score: float) 
         {"Stage": "Numeric scaling",
          base_key: "Standardize every numeric column",
          dn_key: "Same: standardize every numeric column"},
+        {"Stage": "Outliers (rule R8)",
+         base_key: "Ignored: extreme values are left exactly as they are",
+         dn_key: (f"Clipped in {len(clipped)} column(s): {_names(clipped)}" if clipped
+                  else "Checked for; no column needed clipping")},
         {"Stage": "Class imbalance",
          base_key: "Ignored: every row counts equally",
-         dn_key: "Logistic regression and random forest are trained with balanced class weights"},
+         dn_key: (f"Balanced class weights for: {', '.join(weighted)}" if weighted
+                  else "None of the models support class weights")},
         {"Stage": "Model",
          base_key: "Logistic regression only",
-         dn_key: "Compares 4 models (logistic regression, random forest, gradient boosting, voting ensemble) and keeps the best"},
+         dn_key: f"Compares {len(model_names)} models ({', '.join(model_names)}) and keeps the best by cross-validation"},
     ]
 
     summary = (
         "Logistic regression with default settings and no class weighting, trained on a fixed preprocessing "
         "recipe that never looks at the data: numeric columns are filled with the median and standardized, "
-        "every categorical column is filled with its most frequent value and one-hot encoded, and no column "
-        f"is ever removed. It is scored with the same cross-validation folds and the same metric ({metric_used}) "
-        "as every candidate model."
+        "every categorical column is filled with its most frequent value and one-hot encoded, outliers are "
+        "ignored, and no column is ever removed. It is scored with the same cross-validation folds and the "
+        f"same metric ({metric_used}) as every candidate model."
     )
 
     why_chosen = [
@@ -314,41 +415,55 @@ class ModelSelector:
         preprocessor = build_decided_preprocessor(self.plan, X)
         cv = StratifiedKFold(n_splits=effective_cv_folds, shuffle=True, random_state=random_state)
 
-        candidate_results = []
-        fold_scores = {}
-        model_scores = {}
+        n_rows = len(self.df)
+        candidates = _build_candidates(n_rows, min_class_count)
+        skipped: Dict[str, str] = {}
+        if n_rows > SVM_MAX_ROWS:
+            skipped["svm"] = (
+                f"Skipped: kernel SVMs take time that grows roughly with the square of the number of rows, and "
+                f"this run has {n_rows:,} rows (limit {SVM_MAX_ROWS:,}). Use fast mode or a smaller sample to include it."
+            )
+
+        candidate_results: List[ModelMetrics] = []
+        fold_scores: Dict[str, List[float]] = {}
+        model_scores: Dict[str, float] = {}
         best_name, best_score = None, -np.inf
 
-        for name, model in _build_candidates().items():
-            pipe = Pipeline([("preprocess", preprocessor), ("model", model)])
+        for name, model in candidates.items():
+            try:
+                pipe = Pipeline([("preprocess", preprocessor), ("model", model)])
 
-            fold_preds = np.empty(len(y), dtype=y.dtype)
-            fold_proba = np.empty(len(y)) if is_binary else None
-            per_fold_scores = []
+                fold_preds = np.empty(len(y), dtype=y.dtype)
+                fold_proba = np.empty(len(y)) if is_binary else None
+                per_fold_scores = []
 
-            for train_idx, test_idx in cv.split(X, y):
-                X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
-                y_train, y_test = y[train_idx], y[test_idx]
+                for train_idx, test_idx in cv.split(X, y):
+                    X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+                    y_train, y_test = y[train_idx], y[test_idx]
 
-                fitted = Pipeline(pipe.steps).fit(X_train, y_train)
-                fold_preds[test_idx] = fitted.predict(X_test)
-                per_fold_scores.append(scorer(fitted, X_test, y_test))
-                if is_binary:
-                    fold_proba[test_idx] = fitted.predict_proba(X_test)[:, 1]
+                    fitted = Pipeline(pipe.steps).fit(X_train, y_train)
+                    fold_preds[test_idx] = fitted.predict(X_test)
+                    per_fold_scores.append(scorer(fitted, X_test, y_test))
+                    if is_binary:
+                        if hasattr(fitted, "predict_proba"):
+                            fold_proba[test_idx] = fitted.predict_proba(X_test)[:, 1]
+                        else:
+                            # the SVM gives margin scores instead of probabilities; fine for ROC-AUC
+                            fold_proba[test_idx] = fitted.decision_function(X_test)
 
-            y_pred = fold_preds
-            fold_scores[name] = per_fold_scores
-            y_proba = fold_proba
-
-            acc = accuracy_score(y, y_pred)
-            avg = "binary" if is_binary else "macro"
-            prec = precision_score(y, y_pred, average=avg, zero_division=0)
-            rec = recall_score(y, y_pred, average=avg, zero_division=0)
-            f1 = f1_score(y, y_pred, average=avg, zero_division=0)
-            roc = roc_auc_score(y, y_proba) if y_proba is not None else float("nan")
-            cm = confusion_matrix(y, y_pred).tolist()
+                acc = accuracy_score(y, fold_preds)
+                avg = "binary" if is_binary else "macro"
+                prec = precision_score(y, fold_preds, average=avg, zero_division=0)
+                rec = recall_score(y, fold_preds, average=avg, zero_division=0)
+                f1 = f1_score(y, fold_preds, average=avg, zero_division=0)
+                roc = roc_auc_score(y, fold_proba) if fold_proba is not None else float("nan")
+                cm = confusion_matrix(y, fold_preds).tolist()
+            except Exception as e:
+                skipped[name] = f"Failed on this data ({type(e).__name__}: {e})"
+                continue
 
             score = {"accuracy": acc, "f1": f1}[metric_used]
+            fold_scores[name] = per_fold_scores
             model_scores[name] = float(score)
             notes = MODEL_NOTES.get(name, {"gains": [], "limitations": []})
 
@@ -356,9 +471,16 @@ class ModelSelector:
                 model_name=name, accuracy=acc, precision=prec, recall=rec, f1=f1,
                 roc_auc=roc, confusion_matrix=cm,
                 gains=notes["gains"], limitations=notes["limitations"],
+                family=MODEL_FAMILIES.get(name, ""),
             ))
             if score > best_score:
                 best_name, best_score = name, score
+
+        if not candidate_results:
+            raise InsufficientDataError(
+                "No candidate model could be trained on this data. "
+                + "; ".join(f"{k}: {v}" for k, v in skipped.items())
+            )
 
         baseline_score = _cv_score(_build_naive_pipeline(X_full, None), X_full, y, cv, metric_used, is_binary)
         balanced_baseline_score = _cv_score(
@@ -371,14 +493,14 @@ class ModelSelector:
                        "Logistic regression on the fixed preprocessing recipe"),
             LadderStep("+ class balancing", balanced_baseline_score,
                        "Same recipe and model, but the minority class is weighted up so it counts more"),
-            LadderStep("+ DataNarrate preprocessing", model_scores["logistic_regression"],
+            LadderStep("+ DataNarrate preprocessing", model_scores.get("logistic_regression", float("nan")),
                        "Same model, but preprocessing is decided from the data instead of the fixed recipe"),
             LadderStep("+ best model chosen", float(best_score),
                        "Logistic regression was already the best model, so nothing changes" if best_is_lr
                        else f"Switched from logistic regression to {best_name}"),
         ]
 
-        baseline_info = _describe_baseline(self.plan, metric_used, baseline_score)
+        baseline_info = _describe_baseline(self.plan, metric_used, baseline_score, list(model_scores.keys()))
         justification = self._build_justification(candidate_results, best_name, metric_used, baseline_score)
 
         return SelectionResult(
@@ -388,17 +510,20 @@ class ModelSelector:
             improvement_over_baseline=float(best_score - baseline_score),
             final_justification=justification, fold_scores=fold_scores,
             cv_folds_used=effective_cv_folds, baseline_info=baseline_info, ladder=ladder,
+            skipped_models=skipped,
         )
 
     def _build_justification(self, results, best_name, metric, baseline) -> str:
         best = next(r for r in results if r.model_name == best_name)
         best_val = getattr(best, metric)
         others = sorted([r for r in results if r.model_name != best_name], key=lambda r: getattr(r, metric), reverse=True)
+        if not others:
+            return f"{best_name} was the only model that could be trained on this data."
         runner_up = others[0]
         gap = round((best_val - getattr(runner_up, metric)) * 100, 2)
         return (
-            f"{best_name} was selected as the best model on {metric} ({round(best_val, 4)}), "
-            f"{gap} percentage points ahead of the runner-up, {runner_up.model_name} "
+            f"{best_name} ({best.family}) was selected as the best of {len(results)} models on {metric} "
+            f"({round(best_val, 4)}), {gap} percentage points ahead of the runner-up, {runner_up.model_name} "
             f"({round(getattr(runner_up, metric), 4)}). Compared with the fixed baseline "
             f"(logistic regression on a fixed preprocessing recipe, {round(baseline, 4)}), the score changed by "
             f"{best_val - baseline:+.4f}. Strengths: {'; '.join(best.gains) or 'none noted'}. "

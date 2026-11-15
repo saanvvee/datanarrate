@@ -229,7 +229,7 @@ if uploaded_file is not None:
             st.warning(f"Could not build the preprocessing proof ({type(e).__name__}: {e}). The rest of the run is unaffected.")
 
         try:
-            with st.spinner("Comparing the baseline and 4 models — this takes a minute or two..."):
+            with st.spinner("Comparing the baseline and 8 models — this takes a few minutes..."):
                 result = ModelSelector(run_df, profile, plan).select()
         except InsufficientDataError as e:
             st.error(f"Can't run model comparison: {e}")
@@ -347,13 +347,15 @@ if uploaded_file is not None:
 
         with tab_models:
             metrics_df = pd.DataFrame([
-                {"Model": r.model_name, "Accuracy": r.accuracy, "Precision": r.precision,
+                {"Model": r.model_name, "Family": r.family, "Accuracy": r.accuracy, "Precision": r.precision,
                  "Recall": r.recall, "F1": r.f1, "ROC-AUC": r.roc_auc}
                 for r in result.candidate_results
             ])
-            st.dataframe(metrics_df.round(4), width="stretch")
+            st.dataframe(metrics_df.round(4), hide_index=True, width="stretch")
+            for skipped_name, skipped_why in result.skipped_models.items():
+                st.info(f"**{skipped_name}**: {skipped_why}")
 
-            melted = metrics_df.melt(id_vars="Model", var_name="Metric", value_name="Score")
+            melted = metrics_df.drop(columns="Family").melt(id_vars="Model", var_name="Metric", value_name="Score")
             fig = px.bar(
                 melted, x="Model", y="Score", color="Metric", barmode="group",
                 title="Model comparison across all metrics", template="plotly_dark",
@@ -372,7 +374,7 @@ if uploaded_file is not None:
             cols = st.columns(2)
             for i, r in enumerate(result.candidate_results):
                 with cols[i % 2]:
-                    st.write(f"**{r.model_name}**")
+                    st.write(f"**{r.model_name}** — {r.family}")
                     cm_fig = px.imshow(
                         r.confusion_matrix, text_auto=True, color_continuous_scale="Purples",
                         labels=dict(x="Predicted", y="Actual", color="Count"),
@@ -387,7 +389,7 @@ if uploaded_file is not None:
 
             st.subheader("Per-model gains and limitations")
             for r in result.candidate_results:
-                with st.expander(f"{r.model_name} — {result.metric_used}: {round(getattr(r, result.metric_used), 4)}"):
+                with st.expander(f"{r.model_name} ({r.family}) — {result.metric_used}: {round(getattr(r, result.metric_used), 4)}"):
                     st.write("**Gains:**")
                     for g in r.gains:
                         st.write("✅", g)

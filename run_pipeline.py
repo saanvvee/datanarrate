@@ -58,7 +58,7 @@ def main():
         print("-", step)
 
     try:
-        print("\n=== MODEL SELECTION (running 4 models, this may take a while) ===")
+        print("\n=== MODEL SELECTION (running 8 models, this may take a while) ===")
         result = ModelSelector(df, profile, plan).select()
     except InsufficientDataError as e:
         print(f"ERROR: {e}")

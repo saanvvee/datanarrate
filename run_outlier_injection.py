@@ -52,7 +52,7 @@ def inject_outliers(df, columns, rate, seed=INJECT_SEED):
         mean, std = original.mean(), original.std()
         rows = rng.choice(len(df), size=n_extreme, replace=False)
         signs = rng.choice([-1.0, 1.0], size=n_extreme)
-        values = new_df[col].astype(float).to_numpy()
+        values = new_df[col].astype(float).to_numpy(copy=True)
         values[rows] = mean + signs * 10 * std
         new_df[col] = values
         positions[col] = rows

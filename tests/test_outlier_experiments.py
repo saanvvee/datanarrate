@@ -5,7 +5,7 @@ import pytest
 from run_outlier_injection import inject_outliers
 from run_outlier_comparison import compare_dataset, verdict, choose_metric
 from src.profiler import DataProfiler
-from src.model_selector import ModelSelector
+from src.model_selector import ModelSelector, _build_candidates
 from src.preprocessor import PreprocessingDecider
 
 
@@ -48,8 +48,7 @@ def test_comparison_runs_on_a_tiny_dataset():
     df.loc[:11, "x"] = 500   # 4% extreme values so that R8 clips something
     rows = compare_dataset("tiny", df, "label", seeds=[0, 1])
 
-    assert [r["model"] for r in rows] == ["logistic_regression", "random_forest",
-                                          "gradient_boosting", "voting_ensemble"]
+    assert [r["model"] for r in rows] == list(_build_candidates())
     for r in rows:
         assert r["n_seeds"] == 2
         assert r["columns_clipped"] >= 1

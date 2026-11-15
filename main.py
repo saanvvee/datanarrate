@@ -23,7 +23,7 @@ if __name__ == "__main__":
     for step in plan.step_trace:
         print("-", step)
 
-    print("\n=== MODEL SELECTION (1-3 minutes on 7k rows, 4 models) ===")
+    print("\n=== MODEL SELECTION (a few minutes, 8 models) ===")
     result = ModelSelector(df, profile, plan).select()
     print(json.dumps(result.to_dict(), indent=2))
 
