@@ -133,4 +133,4 @@ Python, Streamlit, scikit-learn, pandas, NumPy, SciPy, Plotly, SQLite, Groq API,
 
 👩‍💻 Author
 
-Built by Tanishka Dhaka as a final-year project.
+Built by Tanishka Dhaka.
