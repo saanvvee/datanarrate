@@ -33,7 +33,7 @@ from sklearn.metrics import (
 )
 
 from src.profiler import DatasetProfile
-from src.preprocessor import PreprocessingPlan
+from src.preprocessor import PreprocessingPlan, MISSING_LABEL, MISSING_DROP_THRESHOLD, MISSING_HIGH_THRESHOLD, CATEGORICAL_MODE_MAX
 from src.outlier import build_clipper
 
 SVM_MAX_ROWS = 15000
@@ -51,6 +51,39 @@ class FrequencyEncoder(BaseEstimator, TransformerMixin):
         for i, (_, col) in enumerate(X.items()):
             out[:, i] = col.map(self.freq_maps_[i]).fillna(0.0).values
         return out
+
+
+class MissingFlag(BaseEstimator, TransformerMixin):
+    """Outputs one 0/1 column per input column: 1 where the original value was missing (rules R2a, R3b)."""
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        return pd.DataFrame(X).isna().to_numpy().astype(float)
+
+
+def split_by_fill(decisions: Dict[str, Any], cols: List[str]):
+    """Splits text columns into (filled with most frequent value, filled with a 'Missing' category)."""
+    mode_cols = [c for c in cols if decisions[c].missing_action != "impute_constant"]
+    const_cols = [c for c in cols if decisions[c].missing_action == "impute_constant"]
+    return mode_cols, const_cols
+
+
+def categorical_blocks(name: str, cols: List[str], decisions: Dict[str, Any], make_encoder):
+    """Builds the ColumnTransformer entries for one group of text columns (one-hot or frequency)."""
+    mode_cols, const_cols = split_by_fill(decisions, cols)
+    blocks = []
+    if mode_cols:
+        blocks.append((name, Pipeline([
+            ("impute", SimpleImputer(strategy="most_frequent")), ("encode", make_encoder()),
+        ]), mode_cols))
+    if const_cols:
+        blocks.append((f"{name}_missing_category", Pipeline([
+            ("impute", SimpleImputer(strategy="constant", fill_value=MISSING_LABEL)),
+            ("encode", make_encoder()),
+        ]), const_cols))
+    return blocks
 
 
 class DenseTransformer(BaseEstimator, TransformerMixin):
@@ -255,15 +288,15 @@ def build_decided_preprocessor(plan: PreprocessingPlan, X: pd.DataFrame) -> Colu
             numeric_steps.append(("clip", clipper))
         numeric_steps += [("impute", SimpleImputer(strategy="median")), ("scale", StandardScaler())]
         transformers.append(("numeric", Pipeline(numeric_steps), numeric_cols))
+    flag_cols = [c for c, d in decisions.items() if d.missing_indicator and d.scaling_action == "standard_scale"]
+    if flag_cols:
+        # R2a / R3b: a 0/1 "was missing" column, taken from the raw values
+        transformers.append(("missing_flags", MissingFlag(), flag_cols))
     if onehot_cols:
-        transformers.append(("onehot", Pipeline([
-            ("impute", SimpleImputer(strategy="most_frequent")),
-            ("encode", OneHotEncoder(handle_unknown="ignore")),
-        ]), onehot_cols))
+        transformers += categorical_blocks("onehot", onehot_cols, decisions,
+                                           lambda: OneHotEncoder(handle_unknown="ignore"))
     if freq_cols:
-        transformers.append(("freq", Pipeline([
-            ("impute", SimpleImputer(strategy="most_frequent")), ("encode", FrequencyEncoder()),
-        ]), freq_cols))
+        transformers += categorical_blocks("freq", freq_cols, decisions, FrequencyEncoder)
     return ColumnTransformer(transformers, remainder="drop")
 
 
@@ -306,8 +339,12 @@ def _describe_baseline(
     decisions = plan.column_decisions
     ids = [d.column for d in decisions if any("identifier" in r for r in d.reasons)]
     heavy_missing = [d.column for d in decisions if d.missing_action == "drop_column" and d.column not in ids]
+    kept_high = [d.column for d in decisions
+                 if any(r.startswith(("R2a", "R2b")) for r in d.reasons)]
+    flagged = [d.column for d in decisions if d.missing_indicator]
     num_imputed = [d.column for d in decisions if d.missing_action == "impute_median"]
     cat_imputed = [d.column for d in decisions if d.missing_action == "impute_mode"]
+    cat_missing_cat = [d.column for d in decisions if d.missing_action == "impute_constant"]
     onehot = [d.column for d in decisions if d.encoding_action == "one_hot"]
     freq = [d.column for d in decisions if d.encoding_action == "frequency_encode"]
     clipped = [d.column for d in decisions if getattr(d, "outlier_action", "none") == "clip"]
@@ -320,15 +357,20 @@ def _describe_baseline(
         {"Stage": "Identifier-like columns",
          base_key: "Kept, and one-hot encoded like any other text column",
          dn_key: f"Dropped: {_names(ids)}" if ids else "None found, nothing dropped"},
-        {"Stage": "Columns with 40% or more missing",
+        {"Stage": f"Columns with {MISSING_DROP_THRESHOLD:.0f}% or more missing",
          base_key: "Kept and filled in",
          dn_key: f"Dropped: {_names(heavy_missing)}" if heavy_missing else "None found, nothing dropped"},
-        {"Stage": "Missing numbers (under 40%)",
+        {"Stage": f"Columns with {MISSING_HIGH_THRESHOLD:.0f}% to {MISSING_DROP_THRESHOLD:.0f}% missing (R2a/R2b)",
+         base_key: "Kept and filled in (median / most frequent category)",
+         dn_key: (f"Kept, with a 'was missing' flag (numbers) or a 'Missing' category (text): {_names(kept_high)}"
+                  if kept_high else "None found")},
+        {"Stage": "Missing numbers",
          base_key: "Filled with the column median",
-         dn_key: f"Same: median ({len(num_imputed)} column(s) needed it)"},
-        {"Stage": "Missing categories (under 40%)",
+         dn_key: f"Median ({len(num_imputed)} column(s) needed it); plus a 'was missing' flag for {len(flagged)} of them"},
+        {"Stage": "Missing categories",
          base_key: "Filled with the most frequent category",
-         dn_key: f"Same: most frequent category ({len(cat_imputed)} column(s) needed it)"},
+         dn_key: (f"Most frequent category for {len(cat_imputed)} column(s) under {CATEGORICAL_MODE_MAX:.0f}% missing; "
+                  f"an explicit 'Missing' category for {len(cat_missing_cat)} column(s) with more")},
         {"Stage": "Categorical encoding",
          base_key: "One-hot encode every categorical column, however many categories it has",
          dn_key: f"One-hot for {len(onehot)} column(s)"

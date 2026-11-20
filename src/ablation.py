@@ -17,7 +17,7 @@ from sklearn.base import clone
 
 from src.profiler import DatasetProfile
 from src.preprocessor import PreprocessingPlan
-from src.model_selector import FrequencyEncoder, _build_candidates
+from src.model_selector import FrequencyEncoder, MissingFlag, categorical_blocks, _build_candidates
 from src.outlier import build_clipper
 
 
@@ -56,9 +56,8 @@ def run_ablation(df: pd.DataFrame, profile: DatasetProfile, plan: PreprocessingP
         freq_cols = [c for c, d in decisions.items() if d.encoding_action == "frequency_encode"]
 
         impute_strategy_num = "median" if use_imputation else "constant"
-        impute_strategy_cat = "most_frequent" if use_imputation else "constant"
         num_fill = {} if use_imputation else {"fill_value": 0}
-        cat_fill = {} if use_imputation else {"fill_value": "missing"}
+        cat_fill = {"fill_value": "missing"}
 
         transformers = []
         if numeric_cols:
@@ -71,25 +70,40 @@ def run_ablation(df: pd.DataFrame, profile: DatasetProfile, plan: PreprocessingP
             if use_scaling:
                 steps.append(("scale", StandardScaler()))
             transformers.append(("numeric", Pipeline(steps), numeric_cols))
+        flag_cols = [c for c, d in decisions.items() if d.missing_indicator and d.scaling_action == "standard_scale"]
+        if use_imputation and flag_cols:
+            transformers.append(("missing_flags", MissingFlag(), flag_cols))
         if onehot_cols or freq_cols:
             all_cat = onehot_cols + freq_cols
-            encoder = OneHotEncoder(handle_unknown="ignore") if not use_smart_encoding else None
-            if use_smart_encoding:
-                if onehot_cols:
-                    transformers.append(("onehot", Pipeline([
-                        ("impute", SimpleImputer(strategy=impute_strategy_cat, **cat_fill)),
-                        ("encode", OneHotEncoder(handle_unknown="ignore")),
-                    ]), onehot_cols))
-                if freq_cols:
-                    transformers.append(("freq", Pipeline([
-                        ("impute", SimpleImputer(strategy=impute_strategy_cat, **cat_fill)),
-                        ("encode", FrequencyEncoder()),
-                    ]), freq_cols))
+            if use_imputation:
+                # same blocks as the real pipeline (most frequent value or a 'Missing' category)
+                if use_smart_encoding:
+                    if onehot_cols:
+                        transformers += categorical_blocks("onehot", onehot_cols, decisions,
+                                                           lambda: OneHotEncoder(handle_unknown="ignore"))
+                    if freq_cols:
+                        transformers += categorical_blocks("freq", freq_cols, decisions, FrequencyEncoder)
+                else:
+                    transformers += categorical_blocks("cat_forced_onehot", all_cat, decisions,
+                                                       lambda: OneHotEncoder(handle_unknown="ignore"))
             else:
-                transformers.append(("cat_forced_onehot", Pipeline([
-                    ("impute", SimpleImputer(strategy=impute_strategy_cat, **cat_fill)),
-                    ("encode", OneHotEncoder(handle_unknown="ignore")),
-                ]), all_cat))
+                # imputation switched off for this variant: constant fill for everything
+                if use_smart_encoding:
+                    if onehot_cols:
+                        transformers.append(("onehot", Pipeline([
+                            ("impute", SimpleImputer(strategy="constant", **cat_fill)),
+                            ("encode", OneHotEncoder(handle_unknown="ignore")),
+                        ]), onehot_cols))
+                    if freq_cols:
+                        transformers.append(("freq", Pipeline([
+                            ("impute", SimpleImputer(strategy="constant", **cat_fill)),
+                            ("encode", FrequencyEncoder()),
+                        ]), freq_cols))
+                else:
+                    transformers.append(("cat_forced_onehot", Pipeline([
+                        ("impute", SimpleImputer(strategy="constant", **cat_fill)),
+                        ("encode", OneHotEncoder(handle_unknown="ignore")),
+                    ]), all_cat))
         return ColumnTransformer(transformers, remainder="drop")
 
     # same model settings as the model selector uses

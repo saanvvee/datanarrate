@@ -16,6 +16,7 @@ from src.model_selector import ModelSelector, InsufficientDataError
 from src.narrator import Narrator
 from src.storage import RunStorage
 from src.target_preparer import prepare_target, InvalidTargetError
+from src.missing import normalize_missing
 
 
 def main():
@@ -27,6 +28,9 @@ def main():
 
     df = pd.read_csv(csv_path)
     print(f"Loaded {df.shape[0]} rows, {df.shape[1]} columns from {csv_path}")
+    df, missing_report = normalize_missing(df)
+    for line in missing_report.summary_lines() + missing_report.warnings:
+        print("-", line)
 
     if target_column not in df.columns:
         print(f"ERROR: '{target_column}' not found. Available columns: {df.columns.tolist()}")

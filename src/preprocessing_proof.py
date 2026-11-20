@@ -18,7 +18,7 @@ from sklearn.preprocessing import StandardScaler, OneHotEncoder
 
 from src.profiler import DatasetProfile
 from src.preprocessor import (
-    PreprocessingPlan, ColumnDecision, MISSING_DROP_THRESHOLD, ID_LIKE_UNIQUE_RATIO,
+    PreprocessingPlan, ColumnDecision, MISSING_DROP_THRESHOLD, ID_LIKE_UNIQUE_RATIO, MISSING_LABEL,
 )
 from src.model_selector import FrequencyEncoder, build_decided_preprocessor
 
@@ -72,6 +72,10 @@ def _actions_text(d: ColumnDecision) -> List[str]:
         acts.append("fill missing with median")
     if d.missing_action == "impute_mode":
         acts.append("fill missing with most frequent category")
+    if d.missing_action == "impute_constant":
+        acts.append(f"fill missing with a '{MISSING_LABEL}' category")
+    if d.missing_indicator:
+        acts.append("add a 'was missing' flag")
     if d.encoding_action == "one_hot":
         acts.append("one-hot encode")
     if d.encoding_action == "frequency_encode":
@@ -132,6 +136,13 @@ def _prove_numeric(d: ColumnDecision, series: pd.Series) -> ColumnProof:
     else:
         checks.append(("No missing cells", True, "nothing needed filling"))
 
+    if d.missing_indicator:
+        flags = raw.isna().to_numpy().astype(int)
+        checks.append((
+            "'Was missing' flag column added", int(flags.sum()) == n_missing,
+            f"flag column has {int(flags.sum())} one(s), matching the {n_missing} missing cell(s)",
+        ))
+
     constant = float(np.std(imputed)) == 0.0
     mean_ok = abs(float(scaled.mean())) < 1e-6
     std_ok = abs(float(scaled.std()) - 1.0) < 1e-6 or constant
@@ -172,7 +183,11 @@ def _prove_categorical(d: ColumnDecision, series: pd.Series) -> ColumnProof:
         "most common": f"{counts.index[0]} ({top_share:.1%})",
     }
 
-    imputer = SimpleImputer(strategy="most_frequent")
+    use_constant = d.missing_action == "impute_constant"
+    if use_constant:
+        imputer = SimpleImputer(strategy="constant", fill_value=MISSING_LABEL)
+    else:
+        imputer = SimpleImputer(strategy="most_frequent")
     filled = imputer.fit_transform(series.to_frame())[:, 0]
     fill = imputer.statistics_[0]
     filled_df = pd.DataFrame(filled)
@@ -182,7 +197,8 @@ def _prove_categorical(d: ColumnDecision, series: pd.Series) -> ColumnProof:
     if n_missing:
         checks.append((
             "Missing cells filled", n_left == 0,
-            f"{n_missing} cell(s) filled with the most frequent category, '{fill}'",
+            f"{n_missing} cell(s) filled with "
+            + (f"the explicit '{fill}' category" if use_constant else f"the most frequent category, '{fill}'"),
         ))
     else:
         checks.append(("No missing cells", True, "nothing needed filling"))

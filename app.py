@@ -18,6 +18,8 @@ from src.storage import RunStorage
 from src.significance import paired_significance_test
 from src.target_preparer import prepare_target, InvalidTargetError
 from src.outlier import outlier_rows
+from src.missing import normalize_missing
+from src.preprocessor import MISSING_HIGH_THRESHOLD, MISSING_DROP_THRESHOLD
 
 MAX_OUTLIER_PLOTS = 8   # box plots shown for clipped columns
 
@@ -111,6 +113,66 @@ def render_preprocessing_proof(proof):
                 st.dataframe(pd.DataFrame(p.examples), hide_index=True, width="stretch")
 
 
+MISSING_ACTION_TEXT = {
+    "none": "Nothing missing",
+    "impute_median": "Filled with the median",
+    "impute_mode": "Filled with the most frequent value",
+    "impute_constant": "Filled with a 'Missing' category",
+    "drop_column": "Dropped",
+}
+
+
+def render_missing_report(report):
+    """Accurate missing-data summary shown right after upload (placeholders like '?' already converted)."""
+    for line in report.summary_lines():
+        st.write("•", line)
+
+    shown = report.table[report.table["Total missing"] > 0].sort_values("Missing %", ascending=False)
+    if shown.empty:
+        st.success("No missing values found, not even hidden placeholders such as '?'.")
+    else:
+        st.dataframe(
+            shown,
+            hide_index=True, width="stretch",
+            column_config={
+                "Missing %": st.column_config.ProgressColumn(
+                    "Missing %", min_value=0, max_value=100, format="%.2f%%"),
+            },
+        )
+        fig = px.bar(shown, x="Missing %", y="Column", orientation="h", template="plotly_dark",
+                     text="Missing %", range_x=[0, 100])
+        fig.add_vline(x=MISSING_HIGH_THRESHOLD, line_dash="dash", line_color="#00D2D3",
+                      annotation_text=f"{MISSING_HIGH_THRESHOLD:.0f}%")
+        fig.update_layout(height=max(220, 40 * len(shown) + 80), yaxis=dict(autorange="reversed"),
+                          margin=dict(l=20, r=20, t=30, b=20))
+        st.plotly_chart(fig, width="stretch", key="missing_bar_chart")
+
+    for w in report.warnings:
+        st.warning(w)
+
+
+def render_missing_handling(profile, plan):
+    """What the rules decided for every column that has missing values (or was dropped)."""
+    pct = {c.name: c.missing_pct for c in profile.columns}
+    rows = []
+    for d in plan.column_decisions:
+        if pct.get(d.column, 0) == 0 and d.missing_action != "drop_column":
+            continue
+        rule = next((r.split(":")[0] for r in d.reasons if r[:2] in ("R1", "R2", "R3", "R4")), "")
+        rows.append({
+            "Column": d.column,
+            "Missing %": pct.get(d.column, 0),
+            "Decision": MISSING_ACTION_TEXT.get(d.missing_action, d.missing_action),
+            "'Was missing' flag added": "Yes" if d.missing_indicator else "No",
+            "Rule": rule,
+        })
+    if rows:
+        st.dataframe(pd.DataFrame(rows).sort_values("Missing %", ascending=False),
+                     hide_index=True, width="stretch")
+    else:
+        st.write("No column has missing values, so nothing needed filling.")
+
+
 def render_baseline(result):
     info = result.baseline_info
     if info is None:
@@ -171,14 +233,19 @@ uploaded_file = st.file_uploader("Upload a CSV file (up to 1GB)", type=["csv"])
 if uploaded_file is not None:
     @st.cache_data
     def load_csv(file):
-        return pd.read_csv(file)
+        raw = pd.read_csv(file)
+        return normalize_missing(raw)   # rule R0: turns '?', 'N/A', blank text ... into real missing values
 
-    df = load_csv(uploaded_file)
+    df, missing_report = load_csv(uploaded_file)
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.markdown(f'<div class="metric-card"><h3>{df.shape[0]:,}</h3>Rows</div>', unsafe_allow_html=True)
     c2.markdown(f'<div class="metric-card"><h3>{df.shape[1]}</h3>Columns</div>', unsafe_allow_html=True)
-    c3.markdown(f'<div class="metric-card"><h3>{round(df.isna().sum().sum() / df.size * 100, 2)}%</h3>Missing data</div>', unsafe_allow_html=True)
+    c3.markdown(f'<div class="metric-card"><h3>{missing_report.pct_missing}%</h3>Missing data (cells)</div>', unsafe_allow_html=True)
+    c4.markdown(f'<div class="metric-card"><h3>{missing_report.pct_rows_with_missing}%</h3>Rows with a missing value</div>', unsafe_allow_html=True)
+
+    with st.expander("🕳️ Missing data report", expanded=missing_report.n_missing > 0):
+        render_missing_report(missing_report)
 
     with st.expander("Preview data"):
         st.dataframe(df.head(20), width="stretch")
@@ -281,6 +348,15 @@ if uploaded_file is not None:
                 "See the ⚖️ Baseline tab for exactly what it does, why it was chosen, and where the improvement comes from."
             )
 
+            kept_high = [d.column for d in plan.column_decisions
+                         if any(r.startswith(("R2a", "R2b")) for r in d.reasons)]
+            if kept_high:
+                st.info(
+                    f"**{len(kept_high)} column(s) with {MISSING_HIGH_THRESHOLD:.0f}% or more missing were kept, "
+                    f"not dropped:** {', '.join(kept_high)}. Only columns with {MISSING_DROP_THRESHOLD:.0f}% or "
+                    f"more missing are dropped. See the 🔧 Preprocessing tab for each decision."
+                )
+
             ranked = sorted(result.candidate_results, key=lambda r: getattr(r, result.metric_used), reverse=True)
             if len(ranked) > 1:
                 t, p, sig = paired_significance_test(
@@ -294,6 +370,9 @@ if uploaded_file is not None:
                 st.subheader("Proof that each step did what it claims")
                 render_preprocessing_proof(proof)
                 st.divider()
+            st.subheader("How missing values were handled")
+            render_missing_handling(profile, plan)
+            st.divider()
             st.subheader("Step-by-step preprocessing trace")
             for step in plan.step_trace:
                 st.markdown(f'<div class="step-line">{step}</div>', unsafe_allow_html=True)

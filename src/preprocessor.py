@@ -6,10 +6,16 @@ Every decision carries a plain-language reason, and the full sequence of
 actions is recorded as a readable step trace.
 
 Rules (the ID is shown at the start of each reason):
+  R0 hidden placeholders ("?") -> real missing values (done in src/missing.py)
   R1 identifier column dropped      R5 high-cardinality -> frequency encode
-  R2 mostly-missing column dropped  R6 low-cardinality -> one-hot encode
+  R2 almost-empty column dropped    R6 low-cardinality -> one-hot encode
   R3 numeric missing -> median      R7 numeric -> standard scaling
   R4 categorical missing -> mode    R8 outliers -> clip to fences
+  Rules for columns with a lot missing (these KEEP the column):
+  R2a numeric, 40% to 95% missing -> median + "was missing" flag column
+  R2b text, 40% to 95% missing -> fill with an explicit "Missing" category
+  R3b numeric, 5% to 40% missing -> median + "was missing" flag column
+  R4b text, 15% to 40% missing -> fill with an explicit "Missing" category
 """
 
 from dataclasses import dataclass, field, fields
@@ -17,7 +23,11 @@ from typing import List, Optional
 from src.profiler import DatasetProfile, ColumnProfile
 
 
-MISSING_DROP_THRESHOLD = 40.0   # % missing above which we drop the column
+MISSING_DROP_THRESHOLD = 95.0   # % missing at/above which a column carries almost no information -> drop (R2)
+MISSING_HIGH_THRESHOLD = 40.0   # % missing at/above which a column is "heavily missing" -> keep it with R2a/R2b
+MISSING_FLAG_THRESHOLD = 5.0    # % missing at/above which a numeric column also gets a "was missing" flag (R3b)
+CATEGORICAL_MODE_MAX = 15.0     # % missing below which a text column is filled with its most frequent value (R4)
+MISSING_LABEL = "Missing"       # the category used to fill text columns under R2b / R4b
 ID_LIKE_UNIQUE_RATIO = 0.95     # unique/total rows above this = identifier, not a feature
 OUTLIER_MIN_PCT = 1.0           # % of values outside the fences below which we ignore outliers
 
@@ -25,7 +35,7 @@ OUTLIER_MIN_PCT = 1.0           # % of values outside the fences below which we 
 @dataclass
 class ColumnDecision:
     column: str
-    missing_action: str        # "none" | "impute_median" | "impute_mode" | "drop_column"
+    missing_action: str        # "none" | "impute_median" | "impute_mode" | "impute_constant" | "drop_column"
     encoding_action: str       # "none" | "one_hot" | "frequency_encode"
     scaling_action: str        # "none" | "standard_scale"
     reasons: List[str] = field(default_factory=list)
@@ -33,6 +43,7 @@ class ColumnDecision:
     outlier_bounds: str = "none"      # "none" | "iqr" | "percentile" (how the clip bounds are learned)
     clip_lower: Optional[float] = None  # bounds measured on the full data, for display only;
     clip_upper: Optional[float] = None  # the pipeline learns its own bounds from each training fold
+    missing_indicator: bool = False     # True = also add a 0/1 "was missing" column for this numeric column
 
 
 @dataclass
@@ -87,24 +98,56 @@ class PreprocessingDecider:
             )
 
         # --- Missing value handling ---
-        if col.missing_pct >= MISSING_DROP_THRESHOLD:
+        pct = col.missing_pct
+        missing_indicator = False
+        if pct >= MISSING_DROP_THRESHOLD:
             missing_action = "drop_column"
             reasons.append(
-                f"R2: {col.missing_pct}% missing exceeds the {MISSING_DROP_THRESHOLD}% threshold — "
-                f"imputing this much data would be unreliable, so the column is dropped."
+                f"R2: {pct}% missing - at least {MISSING_DROP_THRESHOLD:.0f}% of this column is empty, so "
+                f"it has almost no real values left to learn from. This is the only missing-data "
+                f"situation where a column is dropped; columns with less missing data are kept (R2a/R2b)."
             )
-        elif col.missing_pct > 0:
+        elif pct >= MISSING_HIGH_THRESHOLD:
+            if col.dtype == "numeric":
+                missing_action = "impute_median"
+                missing_indicator = True
+                reasons.append(
+                    f"R2a: {pct}% missing is a lot, but the column still holds real values, so it is "
+                    f"KEPT. Gaps are filled with the median and a 0/1 'was missing' column is added, "
+                    f"so the model can still use the fact that the value was absent."
+                )
+            else:
+                missing_action = "impute_constant"
+                reasons.append(
+                    f"R2b: {pct}% missing is a lot, but the column is KEPT. Gaps are filled with an "
+                    f"explicit '{MISSING_LABEL}' category instead of guessing the most common value "
+                    f"for this many rows, so 'not recorded' becomes information the model can use."
+                )
+        elif pct > 0:
             if col.dtype == "numeric":
                 missing_action = "impute_median"
                 reasons.append(
-                    f"R3: {col.missing_pct}% missing — median imputation preserves the row and "
+                    f"R3: {pct}% missing - median imputation preserves the row and "
                     f"is robust to outliers, unlike mean imputation."
                 )
-            else:
+                if pct >= MISSING_FLAG_THRESHOLD:
+                    missing_indicator = True
+                    reasons.append(
+                        f"R3b: {pct}% is enough that the gaps may not be random, so a 0/1 "
+                        f"'was missing' column is added next to the filled column."
+                    )
+            elif pct < CATEGORICAL_MODE_MAX:
                 missing_action = "impute_mode"
                 reasons.append(
-                    f"R4: {col.missing_pct}% missing — imputing with the most frequent category "
+                    f"R4: {pct}% missing - imputing with the most frequent category "
                     f"keeps the row without inventing a numeric value."
+                )
+            else:
+                missing_action = "impute_constant"
+                reasons.append(
+                    f"R4b: {pct}% missing is too much to fill with the most frequent category "
+                    f"(it would exaggerate that category), so the gaps become their own "
+                    f"'{MISSING_LABEL}' category."
                 )
         else:
             missing_action = "none"
@@ -142,7 +185,7 @@ class PreprocessingDecider:
         return ColumnDecision(
             column=col.name, missing_action=missing_action,
             encoding_action=encoding_action, scaling_action=scaling_action, reasons=reasons,
-            **outlier,
+            missing_indicator=missing_indicator, **outlier,
         )
 
     def _decide_outliers(self, col: ColumnProfile, reasons: List[str]) -> dict:
@@ -198,6 +241,9 @@ class PreprocessingDecider:
         imputed = [d.column for d in decisions if d.missing_action.startswith("impute")]
         encoded = [d.column for d in decisions if d.encoding_action != "none"]
         clipped = [d.column for d in decisions if d.outlier_action == "clip"]
+        flagged = [d.column for d in decisions if d.missing_indicator]
+        kept_high = [d.column for d in decisions
+                     if d.missing_action.startswith("impute") and any(r.startswith(("R2a", "R2b")) for r in d.reasons)]
         scaled = [d.column for d in decisions if d.scaling_action != "none"]
 
         summary = []
@@ -205,6 +251,13 @@ class PreprocessingDecider:
             summary.append(f"{len(dropped)} column(s) dropped (missingness or identifier): {dropped}")
         if imputed:
             summary.append(f"{len(imputed)} column(s) imputed: {imputed}")
+        if kept_high:
+            summary.append(
+                f"{len(kept_high)} column(s) with {MISSING_HIGH_THRESHOLD:.0f}% or more missing were KEPT, "
+                f"not dropped (R2a/R2b): {kept_high}"
+            )
+        if flagged:
+            summary.append(f"{len(flagged)} numeric column(s) got a 'was missing' flag column: {flagged}")
         if encoded:
             summary.append(f"{len(encoded)} categorical column(s) encoded: {encoded}")
         if clipped:

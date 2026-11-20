@@ -8,15 +8,77 @@ def make_profile(df, target="label"):
     return DataProfiler(df, target_column=target).profile()
 
 
-def test_high_missing_column_dropped():
+def test_almost_empty_column_dropped():
+    # 97% missing is above the 95% drop threshold (R2)
+    df = pd.DataFrame({
+        "almost_empty": [None] * 97 + [1, 2, 3],
+        "clean": list(range(100)),
+        "label": [0, 1] * 50,
+    })
+    plan = PreprocessingDecider(make_profile(df)).decide()
+    d = next(x for x in plan.column_decisions if x.column == "almost_empty")
+    assert d.missing_action == "drop_column"
+    assert d.reasons[0].startswith("R2:")
+
+
+def test_heavily_missing_numeric_is_kept_with_flag():
+    # 80% missing used to be dropped; now it is kept (R2a)
     df = pd.DataFrame({
         "mostly_missing": [None] * 8 + [1, 2],
-        "clean": list(range(10)),
         "label": [0, 1] * 5,
     })
     plan = PreprocessingDecider(make_profile(df)).decide()
     d = next(x for x in plan.column_decisions if x.column == "mostly_missing")
-    assert d.missing_action == "drop_column"
+    assert d.missing_action == "impute_median"
+    assert d.missing_indicator is True
+    assert d.reasons[0].startswith("R2a")
+
+
+def test_heavily_missing_text_gets_missing_category():
+    df = pd.DataFrame({
+        "city": [None] * 5 + ["A", "B", "A", "B", "A"],
+        "label": [0, 1] * 5,
+    })
+    plan = PreprocessingDecider(make_profile(df)).decide()
+    d = next(x for x in plan.column_decisions if x.column == "city")
+    assert d.missing_action == "impute_constant"
+    assert d.reasons[0].startswith("R2b")
+    assert d.encoding_action == "one_hot"      # still encoded like any other text column
+
+
+def test_moderate_missing_numeric_gets_flag_but_low_does_not():
+    n = 100
+    df = pd.DataFrame({
+        "a_10pct": [None] * 10 + list(range(90)),
+        "b_2pct": [None] * 2 + list(range(98)),
+        "label": [0, 1] * 50,
+    })
+    plan = PreprocessingDecider(make_profile(df)).decide()
+    a = next(x for x in plan.column_decisions if x.column == "a_10pct")
+    b = next(x for x in plan.column_decisions if x.column == "b_2pct")
+    assert a.missing_indicator and any(r.startswith("R3b") for r in a.reasons)
+    assert not b.missing_indicator
+
+
+def test_text_column_between_15_and_40_pct_gets_missing_category():
+    df = pd.DataFrame({
+        "low": [None] * 5 + ["A", "B"] * 47 + ["A"],         # 5%
+        "mid": [None] * 25 + ["A", "B"] * 37 + ["A"],         # 25%
+        "label": [0, 1] * 50,
+    })
+    plan = PreprocessingDecider(make_profile(df)).decide()
+    low = next(x for x in plan.column_decisions if x.column == "low")
+    mid = next(x for x in plan.column_decisions if x.column == "mid")
+    assert low.missing_action == "impute_mode" and low.reasons[0].startswith("R4:")
+    assert mid.missing_action == "impute_constant" and mid.reasons[0].startswith("R4b")
+
+
+def test_old_saved_plans_without_the_flag_still_load():
+    from src.preprocessor import PreprocessingPlan
+    old = {"column_decisions": [{"column": "x", "missing_action": "none", "encoding_action": "none",
+                                 "scaling_action": "none", "reasons": []}]}
+    plan = PreprocessingPlan.from_dict(old)
+    assert plan.column_decisions[0].missing_indicator is False
 
 
 def test_low_missing_numeric_imputed_with_median():
@@ -128,9 +190,9 @@ def test_binary_numeric_column_is_not_clipped():
 
 def test_dropped_columns_get_no_outlier_rule():
     df = pd.DataFrame({
-        "mostly_missing": [None] * 8 + [1, 1000],
-        "customer_id": [f"c{i}" for i in range(10)],
-        "label": [0, 1] * 5,
+        "mostly_missing": [None] * 98 + [1, 1000],
+        "customer_id": [f"c{i}" for i in range(100)],
+        "label": [0, 1] * 50,
     })
     plan = PreprocessingDecider(make_profile(df)).decide()
     for d in plan.column_decisions:
