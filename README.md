@@ -27,7 +27,7 @@ cd datanarrate
 bash
 conda create -n datanarrate python=3.11
 conda activate datanarrate
-pip install pandas numpy scikit-learn scipy streamlit plotly python-dotenv groq pytest
+pip install -r requirements.txt
 
 (venv works just as well as conda.)
 
@@ -39,11 +39,17 @@ GROQ_API_KEY=your_key_here
 
 Without a key, everything else still works. The app shows a warning and skips only the narration tab. Never commit your .env file.
 
-4. Run the app
+4. Run the web app
+bash
+uvicorn web.server:app
+
+Open http://127.0.0.1:8000, upload a CSV (or load one of the bundled Adult Income or Mushroom samples), choose the target column and click Run DataNarrate. The web app is a FastAPI backend (web/server.py) over the same src/ pipeline, with a single-page frontend in web/static. It shows live progress for every pipeline stage, seven result tabs, an on-demand ablation study and the saved run history. Charts load from the installed plotly package, so the app works without internet (except the optional narration).
+
+API: POST /api/datasets (upload), POST /api/datasets/sample/{adult|mushroom}, POST /api/runs (start a run), GET /api/jobs/{id} (progress and result), POST /api/jobs/{id}/ablation, GET /api/history. Set DATANARRATE_DB to store run history somewhere other than datanarrate.db.
+
+The original Streamlit interface is still available:
 bash
 streamlit run app.py
-
-Open the local URL Streamlit prints (usually http://localhost:8501), upload a CSV, choose the target column and click Run DataNarrate.
 
 Run from the command line instead
 bash
@@ -91,7 +97,10 @@ R7	Numeric column: standard scaling
 R8	Outliers: clipped to IQR fences (or to the 1st and 99th percentiles when the IQR is 0), learned inside each training fold; rows are never deleted
 🗂️ Project structure
 datanarrate/
-├── app.py                    # Streamlit UI
+├── web/
+│   ├── server.py             # FastAPI backend (JSON API + serves the frontend)
+│   └── static/               # Web frontend: index.html, app.js, styles.css
+├── app.py                    # Streamlit UI (original interface)
 ├── run_pipeline.py           # Command-line runner
 ├── main.py                   # Example end-to-end run on the Telco churn data
 ├── fetch_adult.py            # Downloads the Adult income dataset
@@ -129,7 +138,7 @@ You can also try the Kaggle version of adult.csv, where missing values are writt
 
 🛠️ Tech stack
 
-Python, Streamlit, scikit-learn, pandas, NumPy, SciPy, Plotly, SQLite, Groq API, pytest.
+Python, FastAPI, Uvicorn, HTML/CSS/JavaScript, Plotly.js, scikit-learn, pandas, NumPy, SciPy, SQLite, Groq API, pytest (Streamlit for the original interface).
 
 👩‍💻 Author
 

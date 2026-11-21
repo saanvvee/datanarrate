@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DataNarrate</title>
+<link rel="stylesheet" href="/static/styles.css">
+<script src="/vendor/plotly.min.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="logo" href="#" data-view="analyze" aria-label="DataNarrate home">
+      <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true"><rect x="3" y="17" width="5" height="11" rx="1.5"/><rect x="11" y="11" width="5" height="17" rx="1.5"/><rect x="19" y="5" width="5" height="23" rx="1.5"/><path d="M4 12 L13 6 L21 9 L29 3" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>DataNarrate</span>
+    </a>
+    <nav class="mainnav" aria-label="Main">
+      <button class="navbtn active" data-view="analyze" type="button">New analysis</button>
+      <button class="navbtn" data-view="history" type="button">Run history</button>
+    </nav>
+    <button class="iconbtn" id="themeToggle" type="button" aria-label="Switch light or dark theme" title="Switch theme">
+      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg>
+    </button>
+  </div>
+</header>
+
+<main class="page">
+  <!-- ============ ANALYZE VIEW ============ -->
+  <section id="view-analyze">
+    <div class="hero">
+      <h1>Explainable AutoML for tabular classification</h1>
+      <p>Upload a CSV and pick what to predict. Every preprocessing decision comes with a reason and a check, eight models are compared against a transparent baseline, and you see where the improvement comes from.</p>
+    </div>
+
+    <!-- step 1: upload -->
+    <div class="card" id="uploadCard">
+      <div class="card-head"><span class="stepno">1</span><h2>Choose a dataset</h2></div>
+      <label class="dropzone" id="dropzone" for="fileInput">
+        <input type="file" id="fileInput" accept=".csv" hidden>
+        <svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <strong>Drop a CSV here or click to browse</strong>
+        <span class="muted">CSV files only. Placeholders such as "?" or "N/A" are converted to real missing values (rule R0).</span>
+      </label>
+      <div class="samples">
+        <span class="muted">Or try a bundled dataset:</span>
+        <button class="chip" type="button" data-sample="adult">Adult Income (48,842 rows)</button>
+        <button class="chip" type="button" data-sample="mushroom">Mushroom (8,124 rows)</button>
+      </div>
+      <p class="error" id="uploadError" hidden></p>
+    </div>
+
+    <!-- step 2: dataset summary + configure -->
+    <div id="datasetSection" hidden>
+      <div class="card">
+        <div class="card-head"><span class="stepno">2</span><h2 id="datasetTitle">Dataset</h2></div>
+        <div class="kpis" id="datasetKpis"></div>
+        <details class="fold" id="missingFold">
+          <summary>Missing data report</summary>
+          <div class="fold-body" id="missingBody"></div>
+        </details>
+        <details class="fold">
+          <summary>Preview the first 20 rows</summary>
+          <div class="fold-body"><div class="tablewrap" id="previewTable"></div></div>
+        </details>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><span class="stepno">3</span><h2>What do you want to predict?</h2></div>
+        <div class="config">
+          <div class="field">
+            <label for="targetSelect">Target column</label>
+            <select id="targetSelect"></select>
+            <small class="muted" id="targetHint"></small>
+          </div>
+          <label class="switch" id="fastWrap" hidden>
+            <input type="checkbox" id="fastMode" checked>
+            <span class="track" aria-hidden="true"><span class="thumb"></span></span>
+            <span><strong>Fast mode</strong><br><small class="muted" id="fastHint"></small></span>
+          </label>
+          <button class="primary" id="runBtn" type="button">Run DataNarrate</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- progress -->
+    <div class="card" id="progressCard" hidden>
+      <div class="card-head"><h2>Running the pipeline</h2><span class="muted" id="elapsed">0 s</span></div>
+      <ol class="stepper" id="stepper"></ol>
+      <p class="muted small">Model selection fits every model on 5 cross-validation folds, so it is the longest step.</p>
+    </div>
+    <p class="error card" id="runError" hidden></p>
+
+    <!-- results -->
+    <div id="results" hidden>
+      <div class="winner" id="winnerBanner"></div>
+      <div class="tabs" role="tablist" id="tabs">
+        <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
+        <button role="tab" data-tab="prep" aria-selected="false">Preprocessing</button>
+        <button role="tab" data-tab="baseline" aria-selected="false">Baseline</button>
+        <button role="tab" data-tab="models" aria-selected="false">Model comparison</button>
+        <button role="tab" data-tab="cm" aria-selected="false">Confusion matrices</button>
+        <button role="tab" data-tab="why" aria-selected="false">Why this model</button>
+        <button role="tab" data-tab="narration" aria-selected="false">Narration</button>
+      </div>
+      <div class="tabpanel" id="tab-overview"></div>
+      <div class="tabpanel" id="tab-prep" hidden></div>
+      <div class="tabpanel" id="tab-baseline" hidden></div>
+      <div class="tabpanel" id="tab-models" hidden></div>
+      <div class="tabpanel" id="tab-cm" hidden></div>
+      <div class="tabpanel" id="tab-why" hidden></div>
+      <div class="tabpanel" id="tab-narration" hidden></div>
+    </div>
+  </section>
+
+  <!-- ============ HISTORY VIEW ============ -->
+  <section id="view-history" hidden>
+    <div class="card">
+      <div class="card-head"><h2>Run history</h2><span class="muted">Saved in SQLite</span></div>
+      <div class="tablewrap" id="historyTable"></div>
+    </div>
+  </section>
+</main>
+<footer class="foot">DataNarrate · FastAPI backend over the src/ pipeline · scikit-learn, pandas, SciPy, Plotly, SQLite</footer>
+<script src="/static/app.js"></script>
+</body>
+</html>
