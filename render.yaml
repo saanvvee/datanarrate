@@ -1,0 +1,15 @@
+# Render Blueprint: one free Docker web service for the DataNarrate web app.
+services:
+  - type: web
+    name: datanarrate
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATANARRATE_FAST_ROWS   # free instances have 0.1 CPU, so fast mode samples fewer rows
+        value: "3000"
+      - key: DATANARRATE_MAX_UPLOAD_MB
+        value: "50"
+      - key: GROQ_API_KEY            # optional: set it in the Render dashboard to enable narration
+        sync: false
