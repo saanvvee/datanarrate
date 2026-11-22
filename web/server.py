@@ -15,6 +15,9 @@ API
     POST /api/runs                   start a pipeline run -> job id
     GET  /api/jobs/{job_id}          job status, stage progress and, when done, the full result
     POST /api/jobs/{job_id}/ablation run the ablation study for a finished job
+    POST /api/jobs/{job_id}/tasks/{kind}   start an extra analysis (explain, tuning, stats) in the background
+    GET  /api/jobs/{job_id}/tasks/{kind}   its status and, when done, its result
+    POST /api/jobs/{job_id}/explain/row    explain one held-out row (after the explain task)
     GET  /api/history                past runs from SQLite
     GET  /api/health                 liveness check
 """
@@ -46,6 +49,10 @@ from src.model_selector import ModelSelector, InsufficientDataError
 from src.significance import paired_significance_test
 from src.outlier import outlier_rows
 from src.ablation import run_ablation
+from src.model_data import prepare_model_data, model_pipeline, baseline_pipeline
+from src.explainer import ModelExplainer
+from src.tuning import tune_model
+from src.significance import repeated_cv_comparison
 from src.storage import RunStorage
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -67,6 +74,10 @@ _datasets: Dict[str, Dict[str, Any]] = {}
 _jobs: Dict[str, Dict[str, Any]] = {}
 _lock = threading.Lock()
 _executor = ThreadPoolExecutor(max_workers=1)   # one heavy run at a time
+_task_executor = ThreadPoolExecutor(max_workers=1)   # extra analyses, one at a time
+TASK_KINDS = ("explain", "tuning", "stats")
+TUNING_ITER = int(os.environ.get("DATANARRATE_TUNING_ITER", 10))
+STATS_REPEATS = int(os.environ.get("DATANARRATE_STATS_REPEATS", 3))
 
 
 # ---------------------------------------------------------------- JSON helpers
@@ -338,7 +349,7 @@ def job_status(job_id: str):
         job = _jobs.get(job_id)
         if job is None:
             raise HTTPException(404, "Unknown job.")
-        out = {k: v for k, v in job.items() if k not in ("context",)}
+        out = {k: v for k, v in job.items() if k not in ("context", "tasks")}
     out["elapsed"] = round((out.get("finished") or time.time()) - out["started"], 1)
     return out
 
@@ -356,6 +367,87 @@ def ablation(job_id: str):
                         result.metric_used, cv_folds=result.cv_folds_used)
     return clean({"model": result.best_model_name, "metric": result.metric_used,
                   "seconds": round(time.time() - started, 1), "variants": rows})
+
+
+def _run_task(job_id: str, kind: str):
+    with _lock:
+        ctx = _jobs[job_id]["context"]
+        task = _jobs[job_id]["tasks"][kind]
+    try:
+        result, data = ctx["result"], prepare_model_data(ctx["df"], ctx["profile"], ctx["plan"])
+        if kind == "explain":
+            ex = ModelExplainer(data, result.best_model_name)
+            out = {"global": ex.global_importance().to_dict(), "rows": ex.holdout_rows()}
+            first = ex.explain_row(0).to_dict()
+            out["local"] = first
+            with _lock:
+                ctx["explainer"] = ex
+        elif kind == "tuning":
+            out = tune_model(data, result.best_model_name, n_iter=TUNING_ITER).to_dict()
+            out["ladder_before"] = result.best_score
+        else:
+            ranked = sorted(result.candidate_results, key=lambda r: getattr(r, result.metric_used), reverse=True)
+            winner = ranked[0].model_name
+            runner = ranked[1].model_name if len(ranked) > 1 else None
+            pipes = {winner: (model_pipeline(data, winner), data.X), "baseline": (baseline_pipeline(data), data.X_full)}
+            if runner:
+                pipes[runner] = (model_pipeline(data, runner), data.X)
+            out = repeated_cv_comparison(pipes, data.y, data.scorer_name, data.metric, winner, runner,
+                                         n_repeats=STATS_REPEATS).to_dict()
+        task.update(status="done", result=clean(out), finished=time.time())
+    except Exception as e:
+        traceback.print_exc()
+        task.update(status="error", error=f"{type(e).__name__}: {e}", finished=time.time())
+
+
+def _job_context(job_id: str):
+    with _lock:
+        job = _jobs.get(job_id)
+        ctx = job.get("context") if job else None
+    if ctx is None:
+        raise HTTPException(404, "Run the pipeline first; this job has no finished result.")
+    return job, ctx
+
+
+@app.post("/api/jobs/{job_id}/tasks/{kind}")
+def start_task(job_id: str, kind: str):
+    if kind not in TASK_KINDS:
+        raise HTTPException(404, f"Unknown analysis '{kind}'.")
+    job, _ = _job_context(job_id)
+    with _lock:
+        tasks = job.setdefault("tasks", {})
+        if tasks.get(kind, {}).get("status") == "running":
+            return {"status": "running"}
+        tasks[kind] = {"status": "running", "started": time.time()}
+    _task_executor.submit(_run_task, job_id, kind)
+    return {"status": "running"}
+
+
+@app.get("/api/jobs/{job_id}/tasks/{kind}")
+def task_status(job_id: str, kind: str):
+    with _lock:
+        job = _jobs.get(job_id)
+        task = dict((job or {}).get("tasks", {}).get(kind) or {})
+    if not task:
+        raise HTTPException(404, "This analysis has not been started.")
+    task["elapsed"] = round((task.get("finished") or time.time()) - task["started"], 1)
+    return task
+
+
+class RowRequest(BaseModel):
+    row: int
+
+
+@app.post("/api/jobs/{job_id}/explain/row")
+def explain_row(job_id: str, req: RowRequest):
+    _, ctx = _job_context(job_id)
+    ex = ctx.get("explainer")
+    if ex is None:
+        raise HTTPException(400, "Compute the feature importance first.")
+    try:
+        return clean(ex.explain_row(req.row).to_dict())
+    except IndexError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/history")
