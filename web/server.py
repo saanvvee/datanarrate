@@ -18,6 +18,9 @@ API
     POST /api/jobs/{job_id}/tasks/{kind}   start an extra analysis (explain, tuning, stats) in the background
     GET  /api/jobs/{job_id}/tasks/{kind}   its status and, when done, its result
     POST /api/jobs/{job_id}/explain/row    explain one held-out row (after the explain task)
+    POST /api/jobs/{job_id}/tasks/model    train the final model (then: model.joblib, sample.csv, predict, predictions.csv)
+    POST /api/jobs/{job_id}/fact-check     check the narration against the computed numbers
+    GET  /api/jobs/{job_id}/report.pdf     one-click PDF report
     GET  /api/history                past runs from SQLite
     GET  /api/health                 liveness check
 """
@@ -54,6 +57,9 @@ from src.explainer import ModelExplainer
 from src.tuning import tune_model
 from src.significance import repeated_cv_comparison
 from src.storage import RunStorage
+from src.predictor import train_bundle
+from src.fact_checker import check_narration
+from web.extras import install as install_extras, facts_from_payload
 
 STATIC_DIR = Path(__file__).parent / "static"
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -75,7 +81,7 @@ _jobs: Dict[str, Dict[str, Any]] = {}
 _lock = threading.Lock()
 _executor = ThreadPoolExecutor(max_workers=1)   # one heavy run at a time
 _task_executor = ThreadPoolExecutor(max_workers=1)   # extra analyses, one at a time
-TASK_KINDS = ("explain", "tuning", "stats")
+TASK_KINDS = ("explain", "tuning", "stats", "model")
 TUNING_ITER = int(os.environ.get("DATANARRATE_TUNING_ITER", 10))
 STATS_REPEATS = int(os.environ.get("DATANARRATE_STATS_REPEATS", 3))
 
@@ -136,6 +142,11 @@ def load_sample(name: str):
     return out
 
 
+def missing_report_dict(report):
+    return {"n_cells": report.n_cells, "n_missing": report.n_missing, "pct_missing": report.pct_missing,
+            "summary": report.summary_lines(), "warnings": report.warnings, "columns": report.table.to_dict("records")}
+
+
 def _register(raw: pd.DataFrame, filename: str):
     if raw.shape[1] < 2 or raw.shape[0] < 10:
         raise HTTPException(400, "The file needs at least 2 columns and 10 rows.")
@@ -145,7 +156,7 @@ def _register(raw: pd.DataFrame, filename: str):
     with _lock:
         if len(_datasets) >= MAX_DATASETS:
             _datasets.pop(next(iter(_datasets)))
-        _datasets[dataset_id] = {"df": df, "name": filename}
+        _datasets[dataset_id] = {"df": df, "name": filename, "missing_report": missing_report_dict(report)}
 
     table = report.table
     return clean({
@@ -317,6 +328,12 @@ def _run_pipeline(job_id: str, df: pd.DataFrame, dataset_name: str, target: str,
             "narration": narration, "narration_error": narration_error,
             "run_id": run_id,
         }
+        if narration:
+            try:
+                payload["fact_check"] = clean(check_narration(
+                    narration, facts_from_payload(payload, _jobs[job_id].get("missing_report"))))
+            except Exception:
+                payload["fact_check"] = None
         with _lock:
             _jobs[job_id]["context"] = {"df": run_df, "profile": profile, "plan": plan, "result": result}
         _set(job_id, status="done", stage="done", result=clean(payload), finished=time.time())
@@ -338,7 +355,8 @@ def start_run(req: RunRequest):
     job_id = uuid.uuid4().hex[:12]
     with _lock:
         _jobs[job_id] = {"status": "running", "stage": "queued", "started": time.time(), "log": [],
-                         "target": req.target, "dataset_name": ds["name"]}
+                         "target": req.target, "dataset_name": ds["name"],
+                         "missing_report": clean(ds.get("missing_report"))}
     _executor.submit(_run_pipeline, job_id, ds["df"], ds["name"], req.target, req.fast_mode)
     return {"job_id": job_id, "stages": [{"key": k, "label": v} for k, v in STAGES]}
 
@@ -349,7 +367,7 @@ def job_status(job_id: str):
         job = _jobs.get(job_id)
         if job is None:
             raise HTTPException(404, "Unknown job.")
-        out = {k: v for k, v in job.items() if k not in ("context", "tasks")}
+        out = {k: v for k, v in job.items() if k not in ("context", "tasks", "missing_report")}
     out["elapsed"] = round((out.get("finished") or time.time()) - out["started"], 1)
     return out
 
@@ -374,7 +392,15 @@ def _run_task(job_id: str, kind: str):
         ctx = _jobs[job_id]["context"]
         task = _jobs[job_id]["tasks"][kind]
     try:
-        result, data = ctx["result"], prepare_model_data(ctx["df"], ctx["profile"], ctx["plan"])
+        result = ctx["result"]
+        if kind == "model":
+            from src.predictor import bundle_info
+            bundle = train_bundle(ctx["df"], ctx["profile"], ctx["plan"], result)
+            with _lock:
+                ctx["bundle"] = bundle
+            task.update(status="done", result=clean(bundle_info(bundle)), finished=time.time())
+            return
+        data = prepare_model_data(ctx["df"], ctx["profile"], ctx["plan"])
         if kind == "explain":
             ex = ModelExplainer(data, result.best_model_name)
             out = {"global": ex.global_importance().to_dict(), "rows": ex.holdout_rows()}
@@ -448,6 +474,9 @@ def explain_row(job_id: str, req: RowRequest):
         return clean(ex.explain_row(req.row).to_dict())
     except IndexError as e:
         raise HTTPException(400, str(e))
+
+
+install_extras(app, _lock, _jobs, clean)
 
 
 @app.get("/api/history")

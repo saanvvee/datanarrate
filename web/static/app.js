@@ -383,9 +383,61 @@ const RENDER = {
     let h;
     if (R.narration) h = `<div class="panel narr">${R.narration.split(/\n\s*\n/).map((p) => `<p>${esc(p)}</p>`).join("")}</div><p class="muted small">Written by an LLM from the computed results only. The tables in the other tabs are the source of truth.</p>`;
     else h = `<div class="notice warn">Narration is unavailable for this run (${esc(R.narration_error || "no API key")}). Add GROQ_API_KEY to a .env file to enable it. Every other result is unaffected.</div>`;
+    if (R.narration) h += `<div class="panel" style="margin-top:14px"><h3>Fact-check</h3><div id="fcOut">${R.fact_check ? "" : `<button class="primary" id="fcBtn" type="button">Check the narration against the numbers</button>`}</div></div>`;
     $("#tab-narration").innerHTML = h;
+    if (R.narration) {
+      if (R.fact_check) renderFactCheck(R.fact_check, $("#fcOut"));
+      else $("#fcBtn").addEventListener("click", async () => {
+        try { renderFactCheck(await api(`/api/jobs/${state.job}/fact-check`, { method: "POST" }), $("#fcOut")); }
+        catch (e) { $("#fcOut").innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+      });
+    }
+  },
+
+  use(R) {
+    $("#tab-use").innerHTML = `
+      <div class="grid2">
+        <div class="panel"><h3>Predict new data</h3>
+          <p class="muted small">Refits <b>${esc(pretty(R.result.best_model_name))}</b> on all ${R.n_rows_used.toLocaleString()} rows of this run, then predicts a CSV you upload. New rows get the same cleaning as training rows (placeholders such as "?" become missing values).</p>
+          <button class="primary" id="trainBtn" type="button">Train the final model</button><div id="trainOut" style="margin-top:12px"></div></div>
+        <div class="panel"><h3>Download the report</h3>
+          <p class="muted small">A PDF with the missing-data report, every preprocessing decision, the model comparison, the improvement ladder and the narration with its fact-check.</p>
+          <a class="chip" href="/api/jobs/${state.job}/report.pdf" download>Download PDF report</a></div>
+      </div><div id="predictOut" style="margin-top:14px"></div>`;
+    $("#trainBtn").addEventListener("click", () => runTask("model", $("#trainBtn"), $("#trainOut"), renderModelReady, "Training the final model..."));
   },
 };
+
+function renderFactCheck(fc, out) {
+  const s = fc.summary;
+  out.innerHTML = `<p><span class="badge ${s.claims_flagged ? "warn" : "good"}">${esc(s.trust)}</span> <span class="muted small">${s.numbers_verified} of ${s.numbers_checked} numbers in the text match the run</span></p>`
+    + (fc.findings.length ? `<ul class="plain">${fc.findings.map((f) => `<li><b>${esc(f.type)}</b>: ${esc(f.detail)}<br><span class="muted small">"${esc(f.sentence)}"</span></li>`).join("")}</ul>` : "")
+    + `<p class="muted small">A rule-based check: it verifies numbers, model comparisons, the winner, the baseline and dropped columns. It cannot judge claims about causes or advice.</p>`;
+}
+
+function renderModelReady(m, out) {
+  out.innerHTML = `<p class="muted small">Ready. Expects ${m.feature_columns.length} columns; predicts <b>${esc(m.target)}</b> (${m.classes.map(esc).join(", ")}).</p>
+    <p><a class="chip" href="/api/jobs/${state.job}/model.joblib" download>Download model (.joblib)</a>
+    <a class="chip" href="/api/jobs/${state.job}/sample.csv" download>Download CSV template</a></p>
+    <label class="chip" style="cursor:pointer">Upload a CSV to predict<input type="file" id="predFile" accept=".csv" hidden></label>`;
+  $("#predFile").addEventListener("change", async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    const box = $("#predictOut"); box.innerHTML = `<p class="muted small">Predicting...</p>`;
+    const fd = new FormData(); fd.append("file", f);
+    try {
+      const r = await api(`/api/jobs/${state.job}/predict`, { method: "POST", body: fd });
+      const n = r.notes;
+      const counts = Object.entries(n.class_counts).map(([k, v]) => `${esc(k)}: ${v.toLocaleString()}`).join(" · ");
+      const warn = [];
+      if (n.hidden_placeholders) warn.push(`${n.hidden_placeholders} hidden placeholder(s) treated as missing`);
+      Object.entries(n.non_numeric_values_treated_as_missing).forEach(([c, k]) => warn.push(`${k} non-numeric value(s) in ${esc(c)} treated as missing`));
+      box.innerHTML = `<div class="panel"><h3>Predictions for ${n.n_rows.toLocaleString()} rows</h3><p>${counts}</p>${warn.length ? `<p class="muted small">${warn.join("; ")}.</p>` : ""}
+        <p><a class="chip" href="/api/jobs/${state.job}/predictions.csv" download>Download all predictions (CSV)</a> <span class="muted small">showing first ${r.shown}</span></p>
+        ${table(r.columns.map((c) => ({ label: c, value: (row) => row[c] ?? "missing" })), r.rows)}</div>`;
+    } catch (err) { box.innerHTML = `<p class="error">${esc(err.message)}</p>`; }
+    finally { e.target.value = ""; }
+  });
+}
 
 async function runAblation() {
   const btn = $("#ablBtn"), out = $("#ablOut");
