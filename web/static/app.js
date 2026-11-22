@@ -5,6 +5,7 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmt = (x, d = 4) => (x === null || x === undefined || Number.isNaN(x) ? "n/a" : Number(x).toFixed(d));
+const fmtP = (p) => (p === null || p === undefined || Number.isNaN(p) ? "n/a" : (p < 0.0001 ? "< 0.0001" : Number(p).toFixed(4)));
 const signed = (x, d = 4) => (x === null || x === undefined ? "n/a" : (Math.abs(x) < 0.5 * 10 ** -d ? (0).toFixed(d) : (x > 0 ? "+" : "") + Number(x).toFixed(d)));
 const pretty = (name) => ({
   logistic_regression: "Logistic regression", random_forest: "Random forest", gradient_boosting: "Gradient boosting",
@@ -47,6 +48,7 @@ function layout(extra = {}) {
 }
 function plot(el, data, lay) {
   if (!window.Plotly) { el.innerHTML = "<p class='muted small'>Charts could not load.</p>"; return; }
+  if (lay && lay.height) el.style.height = `${lay.height}px`;   // the container must grow with tall charts
   Plotly.newPlot(el, data, layout(lay), { displayModeBar: false, responsive: true });
 }
 
@@ -296,6 +298,8 @@ const RENDER = {
       const [a, b, c, d] = res.ladder.map((s) => s.score);
       h += `<div class="notice info">Total change over the baseline: <b>${signed(d - a)}</b>. Class balancing accounts for ${signed(b - a)}, DataNarrate's preprocessing for ${signed(c - b)}, and choosing a different model for ${signed(d - c)}.</div>`;
     }
+    h += `<h3>Hyperparameter tuning (nested cross-validation)</h3><p class="muted">Tunes the selected model with a randomized search inside each training fold (3 inner folds) and scores it on the same 5 outer folds, so the test folds never influence the chosen settings. The result is the next step of the ladder.</p>
+      <button class="secondary" id="tuneBtn" type="button">Tune the selected model</button><div id="tuneOut" style="margin-top:12px"></div>`;
     h += `<h3>Ablation study</h3><p class="muted">Re-scores the selected model with one preprocessing decision switched off at a time, on the same folds. A negative change means the decision helped.</p>
       <button class="secondary" id="ablBtn" type="button">Run ablation study</button><div id="ablOut" style="margin-top:12px"></div>`;
     h += `<h3>Caveats</h3><ul class="plain">${info.caveats.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>`;
@@ -305,6 +309,7 @@ const RENDER = {
       text: sc.map((v) => fmt(v)), textposition: "outside", cliponaxis: false, hovertemplate: "%{x}: %{y:.4f}<extra></extra>" }],
       { yaxis: { range: [Math.max(0, lo - 0.05), hi + 0.04], title: { text: res.metric_used }, gridcolor: css("--line") }, height: 320, margin: { l: 56, r: 10, t: 30, b: 90 } });
     $("#ablBtn").addEventListener("click", runAblation);
+    $("#tuneBtn").addEventListener("click", () => runTask("tuning", $("#tuneBtn"), $("#tuneOut"), renderTuning, "Tuning the selected model..."));
   },
 
   models(R) {
@@ -317,7 +322,10 @@ const RENDER = {
     Object.entries(res.skipped_models || {}).forEach(([k, v]) => { h += `<div class="notice warn"><b>${esc(pretty(k))}:</b> ${esc(v)}</div>`; });
     h += `<div class="grid2" style="margin-top:14px"><div class="panel"><h3>All metrics (darker = higher)</h3><div class="chart" id="metricsChart"></div></div>
       <div class="panel"><h3>Per-fold ${esc(res.metric_used)} spread</h3><div class="chart" id="foldChart"></div></div></div>`;
+    h += `<h3>Rigorous significance test</h3><p class="muted">The quick test above uses one 5-fold split, and its training sets overlap, so it can overstate significance. This re-scores the winner, the runner-up and the baseline with 5-fold cross-validation repeated 3 times (15 scores each) and applies the Nadeau–Bengio corrected t-test.</p>
+      <button class="secondary" id="statsBtn" type="button">Run repeated-CV significance test</button><div id="statsOut" style="margin-top:12px"></div>`;
     $("#tab-models").innerHTML = h;
+    $("#statsBtn").addEventListener("click", () => runTask("stats", $("#statsBtn"), $("#statsOut"), renderStats, "Running repeated cross-validation..."));
     const metrics = [["accuracy", "Accuracy"], ["precision", "Precision"], ["recall", "Recall"], ["f1", "F1"], ["roc_auc", "ROC-AUC"]];
     const names = res.candidate_results.map((r) => pretty(r.model_name));
     const z = res.candidate_results.map((r) => metrics.map(([k]) => r[k]));
@@ -352,6 +360,12 @@ const RENDER = {
           annotations: z.flatMap((row, a) => row.map((v, p) => ({ x: labels[p], y: labels[a], text: v.toLocaleString(), showarrow: false,
             font: { color: v > max * 0.55 ? "#ffffff" : css("--fg"), size: n > 6 ? 10 : 13 } }))) });
     });
+  },
+
+  explain(R) {
+    $("#tab-explain").innerHTML = `<p class="muted">Explains the selected model, <b>${esc(pretty(R.result.best_model_name))}</b>. It is fitted on 75% of the rows and explained on the other 25%, which it never saw.</p>
+      <button class="primary" id="explBtn" type="button">Compute feature importance</button><div id="explOut" style="margin-top:14px"></div>`;
+    $("#explBtn").addEventListener("click", () => runTask("explain", $("#explBtn"), $("#explOut"), renderExplain, "Computing permutation importance..."));
   },
 
   why(R) {
@@ -403,4 +417,73 @@ async function loadHistory() {
       { label: "When", value: (r) => (r.timestamp || "").replace("T", " ").slice(0, 16) }], runs)
       : `<p class="empty">No runs saved yet.</p>`;
   } catch (e) { el.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+}
+
+/* ---------------- extra analyses (background tasks) ---------------- */
+async function runTask(kind, btn, out, render, label) {
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = label;
+  out.innerHTML = `<p class="muted small">Running in the background. This can take a minute or two. <span class="tick">0 s</span></p>`;
+  try {
+    await api(`/api/jobs/${state.job}/tasks/${kind}`, { method: "POST" });
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const t = await api(`/api/jobs/${state.job}/tasks/${kind}`);
+      const tick = $(".tick", out); if (tick) tick.textContent = `${Math.round(t.elapsed)} s`;
+      if (t.status === "running") continue;
+      if (t.status === "error") throw new Error(t.error);
+      render(t.result, out, t.elapsed);
+      btn.textContent = "Run again";
+      break;
+    }
+  } catch (e) { out.innerHTML = `<p class="error">${esc(e.message)}</p>`; btn.textContent = original; }
+  finally { btn.disabled = false; }
+}
+
+function renderExplain(r, out, secs) {
+  const g = r.global, imps = g.importances.slice(0, 15);
+  out.innerHTML = `<div class="kpis">${kpi(fmt(g.holdout_score), `Held-out ${g.metric}`)}${kpi(g.n_train.toLocaleString(), "Training rows")}${kpi(g.n_test.toLocaleString(), "Explained rows")}${kpi(g.n_repeats, "Shuffles per column")}</div>
+    <div class="grid2"><div class="panel"><h3>Which columns matter most (permutation importance)</h3><p class="muted small">Each column is shuffled in turn; the bar is the drop in ${esc(g.metric)} on the held-out rows. A bar near zero means the model barely uses that column.</p><div class="chart" id="impChart"></div></div>
+    <div class="panel"><h3>Why the model predicted this row</h3><p class="muted small">Each column is replaced by a typical value; the bar is how much the ${esc("score of the predicted class")} falls. Positive bars pushed the model towards its prediction.</p>
+      <label class="small muted" for="rowSel">Held-out row</label> <select id="rowSel">${r.rows.map((x) => `<option value="${x.row}">Row ${x.row}: actual ${esc(x.actual)}, predicted ${esc(x.predicted)}</option>`).join("")}</select>
+      <div id="localOut" style="margin-top:10px"></div></div></div>
+    <p class="muted small">${secs ? `${secs} s.` : ""}</p>`;
+  const rev = [...imps].reverse();
+  plot($("#impChart"), [{ type: "bar", orientation: "h", x: rev.map((f) => f.importance), y: rev.map((f) => f.feature),
+    error_x: { type: "data", array: rev.map((f) => f.std), visible: true, color: css("--muted") }, marker: { color: series()[0] },
+    hovertemplate: "%{y}: %{x:.4f}<extra></extra>" }],
+    { height: 40 + 26 * rev.length + 40, margin: { l: 140, r: 20, t: 10, b: 40 }, xaxis: { title: { text: `Drop in ${g.metric}` }, gridcolor: css("--line") } });
+  renderLocal(r.local);
+  $("#rowSel").addEventListener("change", async (e) => {
+    $("#localOut").innerHTML = `<p class="muted small">Explaining row ${e.target.value}...</p>`;
+    try { renderLocal(await api(`/api/jobs/${state.job}/explain/row`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ row: +e.target.value }) })); }
+    catch (err) { $("#localOut").innerHTML = `<p class="error">${esc(err.message)}</p>`; }
+  });
+}
+
+function renderLocal(l) {
+  const c = [...l.contributions].reverse();
+  $("#localOut").innerHTML = `<p><span class="badge">Actual: ${esc(l.actual)}</span> <span class="badge accent">Predicted: ${esc(l.predicted)}</span> ${l.confidence !== null ? `<span class="badge">${(l.confidence * 100).toFixed(1)}% confident</span>` : ""}</p><div class="chart" id="localChart"></div>`
+    + table([{ label: "Column", key: "feature" }, { label: "Value", value: (x) => x.value ?? "missing" }, { label: "Typical value", value: (x) => x.reference ?? "missing" }, { label: "Effect", value: (x) => signed(x.effect, 3), num: true }], l.contributions);
+  plot($("#localChart"), [{ type: "bar", orientation: "h", x: c.map((x) => x.effect), y: c.map((x) => x.feature),
+    marker: { color: c.map((x) => (x.effect >= 0 ? series()[0] : series()[1])) }, hovertemplate: "%{y}: %{x:.3f}<extra></extra>" }],
+    { height: 40 + 26 * c.length + 40, margin: { l: 140, r: 20, t: 10, b: 40 }, xaxis: { title: { text: `Change in ${l.score_kind}` }, gridcolor: css("--line"), zeroline: true } });
+}
+
+function renderTuning(t, out, secs) {
+  const rows = t.default_fold_scores.map((d, i) => ({ fold: i + 1, d, t: t.tuned_fold_scores[i] }));
+  out.innerHTML = `<div class="kpis">${kpi(fmt(t.default_score), `Default ${t.metric}`)}${kpi(fmt(t.tuned_score), `Tuned ${t.metric}`)}${kpi(signed(t.gain), "Gain from tuning")}${kpi(fmtP(t.p_value), "p (tuned vs default)")}</div>
+    <div class="notice ${t.gain > 0 && t.significant ? "good" : "info"}">Ladder step <b>+ tuning</b>: ${fmt(t.default_score)} → ${fmt(t.tuned_score)} (${signed(t.gain)}). ${t.significant ? "The gain is statistically significant on the outer folds." : "The difference is not statistically significant on the outer folds."}</div>
+    <div class="grid2"><div>${table([{ label: "Outer fold", key: "fold", num: true }, { label: "Default", value: (r) => fmt(r.d), num: true }, { label: "Tuned", value: (r) => fmt(r.t), num: true }, { label: "Change", value: (r) => signed(r.t - r.d), num: true }], rows)}</div>
+    <div>${table([{ label: "Setting", key: "k" }, { label: "Most often chosen", key: "v" }], Object.entries(t.most_common_params).map(([k, v]) => ({ k, v })))}</div></div>
+    <p class="muted small">${esc(pretty(t.model_name))}: ${t.n_iter} random settings per fold, ${t.inner_folds} inner folds, ${t.outer_folds} outer folds. ${secs ? `${secs} s.` : ""}</p>`;
+}
+
+function renderStats(s, out, secs) {
+  const names = Object.keys(s.mean);
+  out.innerHTML = table([{ label: "Model", value: (n) => (n === "baseline" ? "Fixed baseline" : pretty(n)) }, { label: `Mean ${s.metric}`, value: (n) => fmt(s.mean[n]), num: true }, { label: "Std", value: (n) => fmt(s.std[n]), num: true }, { label: "Scores", value: (n) => s.scores[n].length, num: true }], names)
+    + table([{ label: "Comparison", value: (t) => `${pretty(t.a)} vs ${t.b === "baseline" ? "baseline" : pretty(t.b)}` }, { label: "Mean difference", value: (t) => signed(t.mean_difference), num: true },
+      { label: "Plain p", value: (t) => fmtP(t.plain_p), num: true }, { label: "Corrected p", value: (t) => fmtP(t.corrected_p), num: true },
+      { label: "Significant (corrected)", html: true, value: (t) => (t.significant_corrected ? "<span class='badge good'>Yes</span>" : "<span class='badge warn'>No</span>") }], s.tests)
+    + `<p class="muted small">${s.n_splits}-fold cross-validation repeated ${s.n_repeats} times. The corrected test inflates the variance by (1/J + n_test/n_train) to account for overlapping training sets. ${secs ? `${secs} s.` : ""}</p>`;
 }

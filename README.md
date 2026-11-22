@@ -14,7 +14,9 @@ Keeps heavily-missing columns. Columns are dropped only when they are almost emp
 Preprocessing proof. Each step is re-run on your data with before/after statistics, pass/fail checks and example rows.
 8 models compared. Logistic regression, random forest, gradient boosting, SVM, k-nearest neighbours, naive Bayes, a neural network and a soft-voting ensemble, all cross-validated with the same folds.
 Transparent baseline and improvement ladder. The winner is compared with a fixed logistic-regression baseline, and the gain is split into class balancing, preprocessing and model choice.
-Significance check. A paired t-test on per-fold scores tells you whether the winner's lead over the runner-up is real or could be noise.
+Significance check. A paired t-test on per-fold scores tells you whether the winner's lead over the runner-up is real or could be noise. An on-demand rigorous test repeats 5-fold cross-validation 3 times and applies the Nadeau–Bengio corrected t-test to the winner against the runner-up and against the baseline.
+Model explanations. Permutation importance shows which input columns the selected model relies on, and any held-out row can be explained column by column.
+Hyperparameter tuning. The selected model can be tuned with nested cross-validation (randomized search inside each training fold), reported as one more step of the improvement ladder.
 Full metric suite. Accuracy, precision, recall, F1 and ROC-AUC, plus a confusion matrix for every model.
 Plain-language narration of the whole run, generated with an LLM (optional).
 Run history saved to a local SQLite database.
@@ -45,7 +47,7 @@ uvicorn web.server:app
 
 Open http://127.0.0.1:8000, upload a CSV (or load one of the bundled Adult Income or Mushroom samples), choose the target column and click Run DataNarrate. The web app is a FastAPI backend (web/server.py) over the same src/ pipeline, with a single-page frontend in web/static. It shows live progress for every pipeline stage, seven result tabs, an on-demand ablation study and the saved run history. Charts load from the installed plotly package, so the app works without internet (except the optional narration).
 
-API: POST /api/datasets (upload), POST /api/datasets/sample/{adult|mushroom}, POST /api/runs (start a run), GET /api/jobs/{id} (progress and result), POST /api/jobs/{id}/ablation, GET /api/history. Set DATANARRATE_DB to store run history somewhere other than datanarrate.db.
+API: POST /api/datasets (upload), POST /api/datasets/sample/{adult|mushroom}, POST /api/runs (start a run), GET /api/jobs/{id} (progress and result), POST /api/jobs/{id}/ablation, POST and GET /api/jobs/{id}/tasks/{explain|tuning|stats} (extra analyses in the background), POST /api/jobs/{id}/explain/row, GET /api/history. Set DATANARRATE_DB to store run history somewhere other than datanarrate.db.
 
 The original Streamlit interface is still available:
 bash
@@ -114,7 +116,10 @@ datanarrate/
 │   ├── model_selector.py     # 8 models, baseline, improvement ladder
 │   ├── ablation.py           # Per-step ablation study
 │   ├── outlier.py            # Outlier clipping helpers
-│   ├── significance.py       # Paired t-test
+│   ├── significance.py       # Paired t-test, repeated CV, corrected t-test
+│   ├── explainer.py          # Permutation importance and per-row explanations
+│   ├── tuning.py             # Nested-CV hyperparameter tuning
+│   ├── model_data.py         # Shared X/y/metric set-up for the extra analyses
 │   ├── narrator.py           # LLM narration
 │   └── storage.py            # SQLite run history
 ├── tests/                    # pytest test suite

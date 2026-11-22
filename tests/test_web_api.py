@@ -85,3 +85,41 @@ def test_ablation_runs_for_a_finished_job(client, finished_job):
 def test_history_lists_the_saved_run(client, finished_job):
     runs = client.get("/api/history").json()
     assert any(r["dataset_name"].startswith("wine.csv") for r in runs)
+
+
+def _run_task(client, job, kind):
+    assert client.post(f"/api/jobs/{job}/tasks/{kind}").status_code == 200
+    for _ in range(600):
+        t = client.get(f"/api/jobs/{job}/tasks/{kind}").json()
+        if t["status"] != "running":
+            return t
+        time.sleep(0.5)
+    raise AssertionError(f"{kind} did not finish")
+
+
+def test_explain_task_and_row_explanation(client, finished_job):
+    job, _ = finished_job
+    t = _run_task(client, job, "explain")
+    assert t["status"] == "done", t.get("error")
+    imps = t["result"]["global"]["importances"]
+    assert len(imps) == 13 and imps[0]["importance"] >= imps[-1]["importance"]
+    r = client.post(f"/api/jobs/{job}/explain/row", json={"row": 3})
+    assert r.status_code == 200 and r.json()["row"] == 3 and r.json()["contributions"]
+    assert client.post(f"/api/jobs/{job}/explain/row", json={"row": 10_000}).status_code == 400
+
+
+def test_tuning_and_stats_tasks(client, finished_job):
+    job, status = finished_job
+    t = _run_task(client, job, "tuning")
+    assert t["status"] == "done", t.get("error")
+    assert len(t["result"]["tuned_fold_scores"]) == 5
+    assert abs(t["result"]["default_score"] - status["result"]["result"]["best_score"]) < 1e-4   # best_score is rounded to 4 places
+    s = _run_task(client, job, "stats")
+    assert s["status"] == "done", s.get("error")
+    assert all(len(v) == 15 for v in s["result"]["scores"].values())
+    assert any(x["b"] == "baseline" for x in s["result"]["tests"])
+
+
+def test_unknown_task_is_rejected(client, finished_job):
+    job, _ = finished_job
+    assert client.post(f"/api/jobs/{job}/tasks/nope").status_code == 404

@@ -26,7 +26,7 @@ from src.model_selector import _build_candidates
 from src.ablation import run_ablation
 
 SEEDS = [0, 1, 2, 3, 4]
-ADULT_ROWS = None   # None = the full 48,842 rows (about 10 minutes for all seeds); set e.g. 20000 to go faster
+ADULT_ROWS = 10000   # sampled like the app's fast mode; None = all 48,842 rows (hours with the SVM)
 OUTPUT_PATH = "results/outlier_repeated.csv"
 
 

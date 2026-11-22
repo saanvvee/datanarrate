@@ -4,7 +4,7 @@ Usage:
     python run_outlier_ablation.py
 
 For each dataset the profile and plan are built as usual, then each of the
-4 models is scored twice with the same CV folds: once with outlier clipping
+model is scored twice with the same CV folds: once with outlier clipping
 and once with it switched off. The table is printed and saved to
 results/outlier_ablation.csv. To add a dataset, add a line to DATASETS.
 """
@@ -67,7 +67,7 @@ def compare_dataset(name, df, target):
     best_with = max(r["with_R8"] for r in rows)
     rows.append({
         "dataset": name, "n_rows": len(df), "metric": result.metric_used,
-        "model": "BEST OF 4 MODELS", "columns_clipped": n_clipped,
+        "model": f"BEST OF {len(result.candidate_results)} MODELS", "columns_clipped": n_clipped,
         "without_R8": best_without, "with_R8": best_with,
         "difference": round(best_with - best_without, 4),
     })
