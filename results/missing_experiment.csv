@@ -1,0 +1,7 @@
+scenario,model,rows_missing_pct,F1_old_drop,F1_new_keep,sd_old,sd_new,gain
+"A. Synthetic, missingness is informative",LogisticRegression,60.44,0.5734,0.7657,0.0215,0.0101,0.1923
+"A. Synthetic, missingness is informative",RandomForest,60.44,0.5271,0.7375,0.0217,0.0115,0.2105
+"B1. Breast cancer, missing depends on class",LogisticRegression,57.72,0.9844,0.9864,0.0025,0.0025,0.002
+"B1. Breast cancer, missing depends on class",RandomForest,57.72,0.9682,0.9738,0.0026,0.0055,0.0055
+"B2. Breast cancer, missing completely at random",LogisticRegression,49.38,0.9844,0.9847,0.0025,0.0028,0.0003
+"B2. Breast cancer, missing completely at random",RandomForest,49.38,0.9682,0.9682,0.0026,0.0026,-0.0

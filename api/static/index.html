@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DataNarrate Console</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
+<style>
+  :root {
+    --bg: #0f1117; --card: #1a1d27; --card2: #161a23; --line: #2a2e3a;
+    --text: #e8eaf0; --muted: #9ca3af; --accent: #6c5ce7; --accent2: #00d2d3;
+    --ok: #2ecc71; --warn: #f1c40f; --orange: #e67e22; --bad: #e74c3c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.5; }
+  a { color: var(--accent2); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header { padding: 28px 24px 8px; max-width: 1100px; margin: 0 auto; display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  h1 { margin: 0; font-size: 2.4rem; font-weight: 800; background: linear-gradient(90deg, var(--accent), var(--accent2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .sub { color: var(--muted); margin: 4px 0 0; }
+  nav a { display: inline-block; margin-left: 10px; padding: 7px 14px; border: 1px solid var(--line); border-radius: 999px; color: var(--text); font-size: .9rem; background: var(--card); }
+  nav a:hover { border-color: var(--accent2); text-decoration: none; }
+  main { max-width: 1100px; margin: 0 auto; padding: 8px 24px 64px; }
+  section.card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 22px; margin-top: 18px; }
+  h2 { margin: 0 0 14px; font-size: 1.15rem; display: flex; align-items: center; gap: 10px; }
+  h3 { margin: 22px 0 8px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; font-size: .8rem; }
+  .num { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; font-size: .85rem; font-weight: 700; }
+  .drop { border: 2px dashed var(--line); border-radius: 12px; padding: 34px 16px; text-align: center; cursor: pointer; transition: .15s; background: var(--card2); }
+  .drop:hover, .drop.over { border-color: var(--accent2); background: #172028; }
+  .drop b { color: var(--accent2); }
+  .muted { color: var(--muted); }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+  .metric { background: var(--card2); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .metric .v { font-size: 1.7rem; font-weight: 800; }
+  .metric .l { color: var(--muted); font-size: .85rem; }
+  .metric .s { color: var(--muted); font-size: .75rem; margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  th { text-align: left; color: var(--muted); font-weight: 600; font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  td { padding: 9px 10px; border-bottom: 1px solid #22262f; vertical-align: middle; }
+  tr.best td { background: rgba(108,92,231,.12); }
+  .tablewrap { overflow-x: auto; }
+  .bar { height: 8px; background: #262a35; border-radius: 99px; overflow: hidden; min-width: 90px; }
+  .bar > i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 99px; }
+  .chip { display: inline-block; padding: 2px 10px; border-radius: 99px; font-size: .75rem; font-weight: 600; border: 1px solid currentColor; }
+  .c-None { color: var(--ok); } .c-Low { color: var(--accent2); } .c-Moderate { color: var(--warn); }
+  .c-High { color: var(--orange); } .c-Severe { color: var(--bad); } .c-rule { color: var(--accent); }
+  .note { border-left: 3px solid var(--accent2); background: var(--card2); padding: 10px 14px; border-radius: 6px; margin: 10px 0; font-size: .92rem; }
+  .note.warn { border-color: var(--warn); }
+  .note.err { border-color: var(--bad); color: #ffb4ab; }
+  .row { display: flex; gap: 14px; flex-wrap: wrap; align-items: end; }
+  label { display: block; font-size: .8rem; color: var(--muted); margin-bottom: 4px; }
+  select { background: var(--card2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; font-size: .95rem; min-width: 190px; }
+  button.primary { background: linear-gradient(90deg, var(--accent), var(--accent2)); border: 0; color: #fff; font-weight: 700; font-size: 1rem; padding: 11px 26px; border-radius: 10px; cursor: pointer; }
+  button.primary:disabled { opacity: .5; cursor: not-allowed; }
+  .check { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; }
+  .check label { margin: 0; }
+  .stepper { display: flex; flex-wrap: wrap; gap: 8px; }
+  .st { padding: 6px 12px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); font-size: .82rem; background: var(--card2); }
+  .st.done { color: var(--ok); border-color: var(--ok); }
+  .st.now { color: #fff; border-color: var(--accent2); background: #172a2e; }
+  .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--accent2); border-top-color: transparent; border-radius: 50%; animation: sp .8s linear infinite; margin-right: 6px; vertical-align: -1px; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+  .winner { background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 12px; padding: 16px 20px; font-size: 1.05rem; color: #fff; }
+  .winner small { opacity: .92; display: block; margin-top: 6px; line-height: 1.4; }
+  .ladder { display: grid; gap: 10px; }
+  .lrow { display: grid; grid-template-columns: 240px 1fr 130px; gap: 12px; align-items: center; font-size: .9rem; }
+  .lrow .bar { height: 14px; }
+  ul.plain { margin: 6px 0; padding-left: 20px; } ul.plain li { margin: 3px 0; }
+  .hidden { display: none; }
+  @media (max-width: 700px) { .lrow { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>🧠 DataNarrate</h1>
+    <p class="sub">Upload a dataset. Pick what to predict. See exactly what it decides, and the proof.</p>
+  </div>
+  <nav><a href="/docs" target="_blank">API docs</a><a href="/redoc" target="_blank">ReDoc</a><a href="/health" target="_blank">Health</a></nav>
+</header>
+
+<main>
+  <section class="card" id="s1">
+    <h2><span class="num">1</span> Upload your data</h2>
+    <div class="drop" id="drop">
+      <div style="font-size:1.6rem">📄</div>
+      <div><b>Click to choose a CSV</b> or drag it here</div>
+      <div class="muted" style="font-size:.85rem" id="dropname">Up to 50 MB</div>
+      <input type="file" id="file" accept=".csv,text/csv" class="hidden">
+    </div>
+    <div id="uploadErr"></div>
+  </section>
+
+  <section class="card hidden" id="reportCard">
+    <h2><span class="num">2</span> Missing data report</h2>
+    <div class="grid" id="metrics"></div>
+    <div id="reportNotes"></div>
+    <div class="tablewrap" id="missingTable"></div>
+  </section>
+
+  <section class="card hidden" id="runCard">
+    <h2><span class="num">3</span> Run DataNarrate</h2>
+    <div class="row">
+      <div><label for="target">Target column (what to predict)</label><select id="target"></select></div>
+      <div><label for="folds">Cross-validation folds</label><select id="folds"><option>3</option><option selected>5</option><option>10</option></select></div>
+      <div class="check"><input type="checkbox" id="fast" checked><label for="fast">Fast mode (sample 10,000 rows)</label></div>
+      <button class="primary" id="runBtn">🚀 Run DataNarrate</button>
+    </div>
+    <div id="runErr"></div>
+    <div id="progress" class="hidden" style="margin-top:18px">
+      <div class="stepper" id="stepper"></div>
+      <p class="muted" id="progressText" style="margin:10px 0 0"></p>
+    </div>
+  </section>
+
+  <section class="card hidden" id="resultCard">
+    <h2><span class="num">4</span> Results</h2>
+    <div id="results"></div>
+  </section>
+
+  <section class="card" id="historyCard">
+    <h2>📂 Past runs</h2>
+    <div class="tablewrap" id="history"><span class="muted">Loading…</span></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const num = (x, d = 4) => (x === null || x === undefined || Number.isNaN(x)) ? "–" : Number(x).toFixed(d);
+const STAGES = ["loading data", "preparing the target column", "profiling the data", "deciding preprocessing", "comparing the baseline and 8 models", "saving", "done"];
+const ACTION = { none: "Nothing missing", impute_median: "Filled with the median", impute_mode: "Filled with the most frequent value", impute_constant: "Filled with a 'Missing' category", drop_column: "Dropped" };
+let state = { datasetId: null, columns: [] };
+
+function errText(body, status) {
+  if (!body) return "Request failed (" + status + ")";
+  if (typeof body.detail === "string") return body.detail;
+  if (Array.isArray(body.detail)) return body.detail.map((d) => d.msg).join("; ");
+  return "Request failed (" + status + ")";
+}
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  let body = null;
+  try { body = await res.json(); } catch (e) {}
+  if (!res.ok) throw new Error(errText(body, res.status));
+  return body;
+}
+function metric(v, l, s) { return `<div class="metric"><div class="v">${v}</div><div class="l">${l}</div>${s ? `<div class="s">${s}</div>` : ""}</div>`; }
+function showErr(el, msg) { el.innerHTML = `<div class="note err">⚠ ${esc(msg)}</div>`; }
+
+/* ---------- upload ---------- */
+const drop = $("drop"), fileInput = $("file");
+drop.onclick = () => fileInput.click();
+drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = () => drop.classList.remove("over");
+drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]); };
+fileInput.onchange = () => { if (fileInput.files[0]) upload(fileInput.files[0]); };
+
+async function upload(file) {
+  $("uploadErr").innerHTML = ""; $("dropname").textContent = "Uploading " + file.name + " …";
+  ["reportCard", "runCard", "resultCard"].forEach((id) => $(id).classList.add("hidden"));
+  const fd = new FormData(); fd.append("file", file);
+  try {
+    const d = await api("/datasets", { method: "POST", body: fd });
+    state.datasetId = d.dataset_id; state.columns = d.columns;
+    $("dropname").textContent = file.name + " · " + d.n_rows.toLocaleString() + " rows · " + d.n_columns + " columns";
+    renderReport(d);
+  } catch (e) { $("dropname").textContent = "Up to 50 MB"; showErr($("uploadErr"), e.message); }
+}
+
+function renderReport(d) {
+  const r = d.missing_report;
+  $("metrics").innerHTML =
+    metric(d.n_rows.toLocaleString(), "Rows") + metric(d.n_columns, "Columns") +
+    metric(r.pct_missing + "%", "Missing cells", r.n_empty_cells.toLocaleString() + " empty + " + r.n_hidden_placeholders.toLocaleString() + " hidden placeholders") +
+    metric(r.pct_rows_with_missing + "%", "Rows with a missing value", r.rows_with_missing.toLocaleString() + " rows");
+  let notes = "";
+  if (r.n_hidden_placeholders > 0) notes += `<div class="note">🔎 <b>${r.n_hidden_placeholders.toLocaleString()} hidden placeholders</b> (such as “?”) were converted to real missing values (rule R0). Without this step they would be counted as normal categories and the report would show less missing data.</div>`;
+  (r.warnings || []).forEach((w) => { notes += `<div class="note warn">⚠ ${esc(w)}</div>`; });
+  $("reportNotes").innerHTML = notes;
+  const rows = r.columns.filter((c) => c["Total missing"] > 0).sort((a, b) => b["Missing %"] - a["Missing %"]);
+  $("missingTable").innerHTML = rows.length ? `<table><thead><tr><th>Column</th><th>Type</th><th>Empty</th><th>Hidden</th><th style="width:22%">Missing %</th><th>Severity</th><th>Placeholders found</th></tr></thead><tbody>` +
+    rows.map((c) => `<tr><td><b>${esc(c.Column)}</b></td><td>${esc(c.Type)}</td><td>${c["Empty cells"]}</td><td>${c["Hidden placeholders"]}</td>
+      <td><div style="display:flex;gap:8px;align-items:center"><div class="bar" style="flex:1"><i style="width:${Math.min(100, c["Missing %"])}%"></i></div><span>${c["Missing %"]}%</span></div></td>
+      <td><span class="chip c-${esc(c.Severity)}">${esc(c.Severity)}</span></td><td class="muted">${esc(c["Placeholders found"])}</td></tr>`).join("") + `</tbody></table>`
+    : `<div class="note">✅ No missing values found, not even hidden placeholders such as “?”.</div>`;
+  $("target").innerHTML = d.columns.map((c, i) => `<option value="${esc(c)}"${i === d.columns.length - 1 ? " selected" : ""}>${esc(c)}</option>`).join("");
+  $("reportCard").classList.remove("hidden"); $("runCard").classList.remove("hidden");
+  $("reportCard").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/* ---------- run + poll ---------- */
+$("runBtn").onclick = async () => {
+  $("runErr").innerHTML = ""; $("resultCard").classList.add("hidden");
+  $("runBtn").disabled = true;
+  try {
+    const start = await api("/runs", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dataset_id: state.datasetId, target_column: $("target").value, fast_mode: $("fast").checked, cv_folds: Number($("folds").value) }) });
+    $("progress").classList.remove("hidden");
+    await poll(start.run_id);
+  } catch (e) { showErr($("runErr"), e.message); $("runBtn").disabled = false; }
+};
+function drawStepper(stage) {
+  const idx = STAGES.indexOf(stage);
+  $("stepper").innerHTML = STAGES.map((s, i) => {
+    const cls = idx > i || stage === "done" ? "done" : (i === idx ? "now" : "");
+    return `<span class="st ${cls}">${cls === "done" ? "✓ " : (cls === "now" ? '<span class="spin"></span>' : "")}${esc(s)}</span>`;
+  }).join("");
+}
+async function poll(runId) {
+  for (;;) {
+    const s = await api("/runs/" + runId);
+    drawStepper(s.stage);
+    $("progressText").textContent = s.status === "queued" ? "Waiting in the queue…" : (s.status === "running" ? "Training 8 models with cross-validation takes a few minutes. You can keep this page open." : "");
+    if (s.status === "done") break;
+    if (s.status === "failed") throw new Error("The run failed: " + (s.error || "unknown error"));
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  const result = await api("/runs/" + runId + "/result");
+  $("runBtn").disabled = false; $("progressText").textContent = "Finished.";
+  renderResult(result); loadHistory();
+}
+
+/* ---------- results ---------- */
+function renderResult(res) {
+  const s = res.selection, metricKey = s.metric_used;
+  const imp = s.improvement_over_baseline;
+  let html = `<div class="winner">🏆 <b>${esc(s.best_model_name)}</b> selected — ${esc(metricKey)}: <b>${num(s.best_score)}</b> vs baseline <b>${num(s.baseline_score)}</b> (${imp >= 0 ? "+" : ""}${num(imp)})<small>${esc(s.final_justification)}</small></div>`;
+
+  const kept = (res.missing_handling || []).filter((r) => r.rule === "R2a" || r.rule === "R2b");
+  if (kept.length) html += `<div class="note">🛟 <b>${kept.length} column(s) with 40% or more missing were kept, not dropped:</b> ${kept.map((k) => esc(k.column)).join(", ")}. Only columns with 95% or more missing are dropped.</div>`;
+
+  html += `<h3>Model comparison (cross-validated)</h3><div class="tablewrap"><table><thead><tr><th>Model</th><th>Family</th><th>Accuracy</th><th>Precision</th><th>Recall</th><th>F1</th><th>ROC-AUC</th></tr></thead><tbody>`;
+  const models = [...s.candidate_results].sort((a, b) => b[metricKey] - a[metricKey]);
+  models.forEach((m) => { html += `<tr class="${m.model_name === s.best_model_name ? "best" : ""}"><td><b>${esc(m.model_name)}</b></td><td class="muted">${esc(m.family)}</td><td>${num(m.accuracy)}</td><td>${num(m.precision)}</td><td>${num(m.recall)}</td><td>${num(m.f1)}</td><td>${num(m.roc_auc)}</td></tr>`; });
+  html += `</tbody></table></div>`;
+  Object.entries(s.skipped_models || {}).forEach(([k, v]) => { html += `<div class="note warn"><b>${esc(k)}</b>: ${esc(v)}</div>`; });
+
+  if (s.ladder && s.ladder.length) {
+    const scores = s.ladder.map((l) => l.score).filter((x) => x !== null);
+    const lo = Math.max(0, Math.min(...scores) - 0.05), hi = Math.min(1, Math.max(...scores) + 0.03);
+    html += `<h3>Where the improvement comes from</h3><div class="ladder">` + s.ladder.map((l, i) => {
+      const w = l.score === null ? 0 : Math.max(3, ((l.score - lo) / (hi - lo || 1)) * 100);
+      const prev = i > 0 ? s.ladder[i - 1].score : null;
+      const delta = (prev !== null && l.score !== null) ? ((l.score - prev >= 0 ? "+" : "") + num(l.score - prev)) : "";
+      return `<div class="lrow"><div><b>${esc(l.label)}</b><div class="muted" style="font-size:.75rem">${esc(l.what_changed)}</div></div><div class="bar"><i style="width:${w}%"></i></div><div>${num(l.score)} <span class="muted">${delta}</span></div></div>`;
+    }).join("") + `</div><p class="muted" style="font-size:.8rem">Bars are zoomed in so small differences are visible.</p>`;
+  }
+
+  const mh = res.missing_handling || [];
+  html += `<h3>How missing values were handled</h3>` + (mh.length ? `<div class="tablewrap"><table><thead><tr><th>Column</th><th>Missing %</th><th>Decision</th><th>“Was missing” flag</th><th>Rule</th></tr></thead><tbody>` +
+    [...mh].sort((a, b) => b.missing_pct - a.missing_pct).map((r) => `<tr><td><b>${esc(r.column)}</b></td><td>${r.missing_pct}%</td><td>${esc(ACTION[r.action] || r.action)}</td><td>${r.was_missing_flag ? "Yes" : "No"}</td><td><span class="chip c-rule">${esc(r.rule)}</span></td></tr>`).join("") + `</tbody></table></div>` : `<div class="note">No column had missing values, so nothing needed filling.</div>`);
+
+  html += `<h3>Preprocessing summary</h3><ul class="plain">` + ((res.preprocessing || {}).summary || []).map((x) => `<li>${esc(x)}</li>`).join("") + `</ul>`;
+  html += `<h3>Target preparation</h3><ul class="plain">` + (res.target_notes || []).map((x) => `<li>${esc(x)}</li>`).join("") + `</ul>`;
+  $("results").innerHTML = html;
+  $("resultCard").classList.remove("hidden");
+  $("resultCard").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/* ---------- history ---------- */
+async function loadHistory() {
+  try {
+    const h = await api("/history");
+    $("history").innerHTML = h.length ? `<table><thead><tr><th>Dataset</th><th>Best model</th><th>Score</th><th>Baseline</th><th>Improvement</th><th>Time</th></tr></thead><tbody>` +
+      h.slice(0, 15).map((r) => `<tr><td>${esc(r.dataset_name)}</td><td>${esc(r.best_model_name)}</td><td>${num(r.best_score)}</td><td>${num(r.baseline_score)}</td><td>${num(r.improvement_over_baseline)}</td><td class="muted">${esc((r.timestamp || "").replace("T", " ").slice(0, 16))}</td></tr>`).join("") + `</tbody></table>`
+      : `<span class="muted">No runs saved yet.</span>`;
+  } catch (e) { $("history").innerHTML = `<span class="muted">Could not load history.</span>`; }
+}
+loadHistory();
+</script>
+</body>
+</html>

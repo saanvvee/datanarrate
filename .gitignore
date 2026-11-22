@@ -8,3 +8,5 @@ __pycache__/
 .env
 __pycache__/
 .pytest_cache/
+api_data/
+adult_kaggle_style.csv
